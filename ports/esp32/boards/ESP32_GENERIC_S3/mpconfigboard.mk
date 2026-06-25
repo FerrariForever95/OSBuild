@@ -1,0 +1,3 @@
+# Board Makefile fragment — auto-managed by ZENO OS Firmware Manager
+# 2026-06-11 04:27:38 UTC
+BOARD_BOARD_BOARD_BOARD_PARTITION_TABLE_CSV = partitions-8MiBplus-ota.csv

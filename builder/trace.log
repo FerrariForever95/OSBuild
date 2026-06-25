@@ -1,0 +1,73 @@
++ set -euo pipefail
++ IFS='
+	'
++ readonly SCRIPT_VERSION=1.0.0
++ SCRIPT_VERSION=1.0.0
++ readonly 'SCRIPT_NAME=ZENO OS Firmware Manager'
++ SCRIPT_NAME='ZENO OS Firmware Manager'
++++ dirname ./s3.sh
+++ cd .
+++ pwd
++ readonly SCRIPT_DIR=/home/shanmukh/OSBuild/builder
++ SCRIPT_DIR=/home/shanmukh/OSBuild/builder
+++ dirname /home/shanmukh/OSBuild/builder
++ REPO=/home/shanmukh/OSBuild
++ readonly PORT_DIR=/home/shanmukh/OSBuild/ports/esp32
++ PORT_DIR=/home/shanmukh/OSBuild/ports/esp32
++ readonly BOARD=ESP32_GENERIC_S3
++ BOARD=ESP32_GENERIC_S3
++ readonly BUILD_DIR=/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3
++ BUILD_DIR=/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3
++ readonly SDKCONFIG_SPIRAM=/home/shanmukh/OSBuild/ports/esp32/boards/sdkconfig.spiram_sx
++ SDKCONFIG_SPIRAM=/home/shanmukh/OSBuild/ports/esp32/boards/sdkconfig.spiram_sx
++ readonly LOG_DIR=/home/shanmukh/OSBuild/logs
++ LOG_DIR=/home/shanmukh/OSBuild/logs
++ readonly SETTINGS_FILE=/home/shanmukh/OSBuild/.config/firmware_manager.conf
++ SETTINGS_FILE=/home/shanmukh/OSBuild/.config/firmware_manager.conf
++ readonly FW_BOOTLOADER=/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/bootloader/bootloader.bin
++ FW_BOOTLOADER=/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/bootloader/bootloader.bin
++ readonly FW_PARTITION=/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/partition_table/partition-table.bin
++ FW_PARTITION=/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/partition_table/partition-table.bin
++ readonly FW_MICROPYTHON=/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/micropython.bin
++ FW_MICROPYTHON=/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/micropython.bin
++ DEFAULT_BOARD=ESP32_GENERIC_S3
++ DEFAULT_PORT=
++ DEFAULT_BAUD=460800
++ DEFAULT_AUTO_MONITOR=no
++ DEFAULT_LOG_RETENTION=20
++ SELECTED_PORT=
++ SETTINGS_LOADED=0
++ LOG_BUILD=
++ LOG_FLASH=
++ LOG_REPAIR=
++ LOG_AUTO=
++ LOG_SESSION=
++ trap _cleanup EXIT
++ trap 'exit 130' INT TERM
++ UI_BACKEND=
++ UI_W=0
++ UI_H=0
++ main
++ require_repo
++ [[ -d /home/shanmukh/OSBuild/ports/esp32 ]]
++ ui_init
++ _ui_measure_term
++ local rows cols
+++ tput lines
++ rows=24
+++ tput cols
++ cols=80
++ UI_H=22
++ UI_W=76
++ [[ 22 -lt 12 ]]
++ [[ 76 -lt 60 ]]
++ [[ 76 -gt 100 ]]
++ _cleanup
++ local exit_code=1
++ rm -f /tmp/zfm_gauge_57755 /tmp/zfm_tmp_57755
++ tput cnorm
+[?12l[?25h+ tput rmcup
+[?1049l[23;0;0t+ [[ 1 -ne 0 ]]
++ echo ''
+
++ exit 1
