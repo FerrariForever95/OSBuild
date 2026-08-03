@@ -1,4 +1,4 @@
-# Zeno OS 16MB Flash Layout
+# Zeno OS 8MB Flash Layout
 # Single OTA + ZFS + User Data
 
 # Name,   Type, SubType, Offset,   Size,     Flags
@@ -11,4 +11,4 @@ ota_0,    app,  ota_0,    0x10000,  0x300000,
 
 zfs,      data, fat,      0x310000, 0x200000,
 
-userdata, data, fat,      0x510000, 0xAF0000,
+userdata, data, fat,      0x510000, 0x2F0000,

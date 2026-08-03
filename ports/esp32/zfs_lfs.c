@@ -154,6 +154,13 @@ static int _lfs_sync(const struct lfs2_config *c)
 
 /* --------------------------------------------------------------------------
  * One-time initialisation  (idempotent — safe to call repeatedly)
+ *
+ * IMPORTANT: this must be called at the top of EVERY public entry point,
+ * before ZFS_LOCK(), not just mount()/format(). s_zfs is a zero-initialised
+ * static, so on a fresh boot s_zfs.lock is NULL. If any public function
+ * calls ZFS_LOCK() (xSemaphoreTake) before the mutex has been created —
+ * e.g. calling zfs.info() or zfs.listdir() before zfs.mount() — it takes a
+ * NULL semaphore handle and crashes (LoadProhibited / null-deref).
  * ----------------------------------------------------------------------- */
 
 static zfs_err_t _zfs_init_once(void)
@@ -254,6 +261,9 @@ zfs_err_t zfs_lfs_mount(void)
 
 zfs_err_t zfs_lfs_umount(void)
 {
+    zfs_err_t rc = _zfs_init_once();
+    if (rc != ZFS_OK) return rc;
+
     ZFS_LOCK();
     if (!s_zfs.mounted) { ZFS_UNLOCK(); return ZFS_ERR_NOT_MOUNTED; }
 
@@ -292,6 +302,9 @@ zfs_err_t zfs_lfs_info(zfs_info_t *out)
 {
     if (!out) return ZFS_ERR_INVAL;
 
+    zfs_err_t rc = _zfs_init_once();
+    if (rc != ZFS_OK) return rc;
+
     ZFS_LOCK();
     out->mounted          = s_zfs.mounted;
     out->block_size       = (uint32_t)s_zfs.cfg.block_size;
@@ -315,6 +328,9 @@ zfs_err_t zfs_lfs_info(zfs_info_t *out)
 zfs_err_t zfs_lfs_write(const char *path, const uint8_t *data, size_t len)
 {
     if (!path || (!data && len > 0)) return ZFS_ERR_INVAL;
+
+    zfs_err_t irc = _zfs_init_once();
+    if (irc != ZFS_OK) return irc;
 
     ZFS_LOCK();
     if (!s_zfs.mounted) { ZFS_UNLOCK(); return ZFS_ERR_NOT_MOUNTED; }
@@ -357,6 +373,9 @@ zfs_err_t zfs_lfs_read(const char *path, uint8_t **out_data, size_t *out_len)
     if (!path || !out_data || !out_len) return ZFS_ERR_INVAL;
     *out_data = NULL;
     *out_len  = 0;
+
+    zfs_err_t irc = _zfs_init_once();
+    if (irc != ZFS_OK) return irc;
 
     ZFS_LOCK();
     if (!s_zfs.mounted) { ZFS_UNLOCK(); return ZFS_ERR_NOT_MOUNTED; }
@@ -411,6 +430,10 @@ zfs_err_t zfs_lfs_read(const char *path, uint8_t **out_data, size_t *out_len)
 zfs_err_t zfs_lfs_delete(const char *path)
 {
     if (!path) return ZFS_ERR_INVAL;
+
+    zfs_err_t irc = _zfs_init_once();
+    if (irc != ZFS_OK) return irc;
+
     ZFS_LOCK();
     if (!s_zfs.mounted) { ZFS_UNLOCK(); return ZFS_ERR_NOT_MOUNTED; }
     int lrc = lfs2_remove(&s_zfs.lfs, path);
@@ -421,6 +444,10 @@ zfs_err_t zfs_lfs_delete(const char *path)
 zfs_err_t zfs_lfs_exists(const char *path, bool *out)
 {
     if (!path || !out) return ZFS_ERR_INVAL;
+
+    zfs_err_t irc = _zfs_init_once();
+    if (irc != ZFS_OK) return irc;
+
     ZFS_LOCK();
     if (!s_zfs.mounted) { ZFS_UNLOCK(); return ZFS_ERR_NOT_MOUNTED; }
     struct lfs2_info info;
@@ -435,6 +462,10 @@ zfs_err_t zfs_lfs_exists(const char *path, bool *out)
 zfs_err_t zfs_lfs_rename(const char *oldpath, const char *newpath)
 {
     if (!oldpath || !newpath) return ZFS_ERR_INVAL;
+
+    zfs_err_t irc = _zfs_init_once();
+    if (irc != ZFS_OK) return irc;
+
     ZFS_LOCK();
     if (!s_zfs.mounted) { ZFS_UNLOCK(); return ZFS_ERR_NOT_MOUNTED; }
     int lrc = lfs2_rename(&s_zfs.lfs, oldpath, newpath);
@@ -449,6 +480,10 @@ zfs_err_t zfs_lfs_rename(const char *oldpath, const char *newpath)
 zfs_err_t zfs_lfs_mkdir(const char *path)
 {
     if (!path) return ZFS_ERR_INVAL;
+
+    zfs_err_t irc = _zfs_init_once();
+    if (irc != ZFS_OK) return irc;
+
     ZFS_LOCK();
     if (!s_zfs.mounted) { ZFS_UNLOCK(); return ZFS_ERR_NOT_MOUNTED; }
     int lrc = lfs2_mkdir(&s_zfs.lfs, path);
@@ -459,6 +494,10 @@ zfs_err_t zfs_lfs_mkdir(const char *path)
 zfs_err_t zfs_lfs_rmdir(const char *path)
 {
     if (!path) return ZFS_ERR_INVAL;
+
+    zfs_err_t irc = _zfs_init_once();
+    if (irc != ZFS_OK) return irc;
+
     ZFS_LOCK();
     if (!s_zfs.mounted) { ZFS_UNLOCK(); return ZFS_ERR_NOT_MOUNTED; }
     /* lfs2_remove handles empty directories */
@@ -471,6 +510,9 @@ zfs_err_t zfs_lfs_listdir(const char *path,
                            zfs_listdir_cb_t cb, void *userdata)
 {
     if (!path || !cb) return ZFS_ERR_INVAL;
+
+    zfs_err_t irc = _zfs_init_once();
+    if (irc != ZFS_OK) return irc;
 
     ZFS_LOCK();
     if (!s_zfs.mounted) { ZFS_UNLOCK(); return ZFS_ERR_NOT_MOUNTED; }

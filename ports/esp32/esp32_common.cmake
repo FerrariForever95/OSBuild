@@ -147,8 +147,9 @@ list(APPEND MICROPY_SOURCE_PORT
     zfs_lfs.c
     modespnow.c
     modzfs.c
-    modili9488.c
-    ili9488.c
+#    modili9488.c
+#    ili9488.c
+    modlcd.c
 )
 list(TRANSFORM MICROPY_SOURCE_PORT PREPEND ${MICROPY_PORT_DIR}/)
 list(APPEND MICROPY_SOURCE_PORT ${CMAKE_BINARY_DIR}/pins.c)
@@ -185,7 +186,7 @@ list(APPEND IDF_COMPONENTS
     esp_system
     esp_timer
     esp_wifi
-#   esp_lcd
+    esp_lcd
     freertos
     hal
     heap

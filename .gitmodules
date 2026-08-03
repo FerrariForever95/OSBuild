@@ -80,3 +80,6 @@
 [submodule "lib/CMSIS_6"]
 	path = lib/CMSIS_6
 	url = https://github.com/ARM-software/CMSIS_6.git
+[submodule "extmod/lcd_binding_micropython"]
+	path = extmod/lcd_binding_micropython
+	url = https://github.com/lbuque/lcd_binding_micropython.git
