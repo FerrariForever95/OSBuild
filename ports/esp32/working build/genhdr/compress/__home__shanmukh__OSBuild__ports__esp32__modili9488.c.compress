@@ -1,0 +1,10 @@
+colour must be 0-65535 (RGB565)
+cmd must be 0-255
+cmd must be 0-255
+cmd must be 0-255
+length must be 1-255
+coordinates must be >= 0
+x1>=x0 and y1>=y0 required
+args must be >= 0
+x,y must be >= 0
+rotation must be 0-3

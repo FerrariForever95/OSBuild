@@ -1,0 +1,11 @@
+failed to create UART event task
+REPL UART buffer size is fixed
+invalid data bits
+invalid stop bits
+invalid inversion mask
+invalid flow control mask
+UART(%d) does not exist
+REPL UART does not support IRQs
+handler must be None or callable
+trigger 0x%04x unsupported
+hard IRQ is not supported

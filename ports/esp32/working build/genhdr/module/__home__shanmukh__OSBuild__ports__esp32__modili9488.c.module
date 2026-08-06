@@ -1,0 +1,1 @@
+MP_REGISTER_MODULE(MP_QSTR_ili9488, modili9488_module);

@@ -1,0 +1,4 @@
+frequency must be 20MHz, 40MHz, 80Mhz, 160MHz or 240MHz
+esp_sleep_enable_touchpad_wakeup() failed
+esp_sleep_enable_ulp_wakeup() failed
+DEEPSLEEP with gpio pins not supported on this chip

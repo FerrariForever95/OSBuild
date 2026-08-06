@@ -1,0 +1,16 @@
+channel
+pin
+rising
+falling
+mode_low
+mode_high
+filter
+value
+minimum
+maximum
+threshold0
+threshold1
+id
+invalid id
+value
+trigger

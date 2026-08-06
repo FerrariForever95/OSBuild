@@ -1,0 +1,7 @@
+Command: cmake -G Ninja -DPYTHON_DEPS_CHECKED=1 -DPYTHON=/home/shanmukh/.espressif/python_env/idf5.5_py3.12_env/bin/python -DESP_PLATFORM=1 -DMICROPY_BOARD=ESP32_GENERIC_S3 -DMICROPY_BOARD_DIR=/home/shanmukh/OSBuild/ports/esp32/boards/ESP32_GENERIC_S3 -DCCACHE_ENABLE=0 /home/shanmukh/OSBuild/ports/esp32
+info: Choice ESPTOOLPY_FLASHSIZE has multiple active selections. The last one will be used: ESPTOOLPY_FLASHSIZE_16MB .
+info: Choice SPIRAM_MODE has multiple active selections. The last one will be used: SPIRAM_MODE_OCT .
+info: Choice ESPTOOLPY_FLASHMODE has multiple active selections. The last one will be used: ESPTOOLPY_FLASHMODE_QIO .
+info: Choice ESPTOOLPY_FLASHFREQ has multiple active selections. The last one will be used: ESPTOOLPY_FLASHFREQ_80M .
+Found User C Module(s): 
+Checking lockfile contents...

@@ -1,0 +1,14 @@
+# Zeno OS 16MB Flash Layout
+# Single OTA + ZFS + User Data
+
+# Name,   Type, SubType, Offset,   Size,     Flags
+
+nvs,      data, nvs,      0x9000,   0x4000,
+otadata,  data, ota,      0xD000,   0x2000,
+phy_init, data, phy,      0xF000,   0x1000,
+
+ota_0,    app,  ota_0,    0x10000,  0x300000,
+
+zfs,      data, fat,      0x310000, 0x200000,
+
+userdata, data, fat,      0x510000, 0xAF0000,

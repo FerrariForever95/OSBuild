@@ -1,0 +1,16 @@
+resolution_hz and clock_div are mutually exclusive
+resolution_hz must be positive
+clock_div must be between 1 and 255
+num_symbols must be even and at least %d
+tx_carrier frequency must be >0
+tx_carrier duty must be 0..100
+activate by calling write_pulses()
+already deinitialized
+already deinitialized
+already deinitialized
+already deinitialized
+arg must be -1, 0 or positive
+already deinitialized
+duration and data must have same length
+No pulses
+invalid channel

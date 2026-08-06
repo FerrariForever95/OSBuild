@@ -1,0 +1,1031 @@
+%c needs int or char
+
+%q index out of range
+
+%q indices must be integers, not %s
+
+%s
+
+%s
+
+'%q' argument required
+
+'%s' object doesn't support item assignment
+
+'%s' object doesn't support item deletion
+
+'%s' object has no attribute '%q'
+
+'%s' object has no attribute '%q'
+
+'%s' object isn't an iterator
+
+'%s' object isn't an iterator
+
+'%s' object isn't callable
+
+'%s' object isn't callable
+
+'%s' object isn't iterable
+
+'%s' object isn't subscriptable
+
+'=' alignment not allowed in string format specifier
+
+'await' outside function
+
+'break'/'continue' outside loop
+
+'not' not implemented
+
+'return' outside function
+
+'yield' outside function
+
+* arg after **
+
+* arg after kwarg
+
+*x must be assignment target
+
+0.0 to a complex power
+
+AP required
+
+CERT_REQUIRED requires server_hostname
+
+DEEPSLEEP with gpio pins not supported on this chip
+
+ERROR: %q %q not word-aligned
+
+ERROR: %q %q not word-aligned
+
+ERROR: %q %q not word-aligned
+
+ERROR: %q %q not word-aligned
+
+ERROR: xtensa %q out of range
+
+ERROR: xtensa %q out of range
+
+ERROR: xtensa %q out of range
+
+ERROR: xtensa %q out of range
+
+ERROR: xtensa %q out of range
+
+ESPNow.recv(): buffer error
+
+I/O operation on closed file
+
+I2C operation not supported
+
+I2C operation not supported
+
+I2C operation not supported
+
+I2C operation not supported
+
+I2C operation not supported
+
+I2C(%d) doesn't exist
+
+I2CTarget(%d) doesn't exist
+
+IV
+
+IV
+
+LHS of keyword arg must be an id
+
+No pulses
+
+PPP not active
+
+PWM is inactive
+
+REPL UART buffer size is fixed
+
+REPL UART does not support IRQs
+
+SPI bus already freed
+
+SPI bus already in use
+
+SPI device already freed
+
+SPI host already in use
+
+SPI pin values required
+
+SPI(%d) doesn't exist
+
+STA must be active
+
+STA required
+
+TinyUSB callback can't recurse
+
+Touch pad error
+
+Touch pad error
+
+Touch pad error
+
+UART(%d) does not exist
+
+UUID
+
+UUID
+
+UUID too long
+
+UUID too short
+
+WDT timeout too short
+
+WiFi Out of Memory
+
+Wifi Internal Error
+
+Wifi Internal NVS Error
+
+Wifi Internal State Error
+
+Wifi Invalid Interface
+
+Wifi Invalid MAC Address
+
+Wifi Invalid Mode
+
+Wifi Invalid Password
+
+Wifi Not Connected
+
+Wifi Not Initialized
+
+Wifi Not Started
+
+Wifi Not Stopped
+
+Wifi SSID Invalid
+
+Wifi Unknown Error 0x%04x
+
+Wifi Wakeup Failure
+
+Wifi Would Block
+
+__init__() should return None, not '%s'
+
+abort() called
+
+activate by calling write_pulses()
+
+address %08x is not aligned to %d bytes
+
+already deinitialized
+
+already deinitialized
+
+already deinitialized
+
+already deinitialized
+
+already deinitialized
+
+annotation must be an identifier
+
+arg is an empty sequence
+
+arg must be -1, 0 or positive
+
+arg must be user-type
+
+arg must be user-type
+
+arg must be user-type
+
+args must be >= 0
+
+argument has wrong type
+
+argument name reused
+
+argument num/types mismatch
+
+array/bytes required on right side
+
+async for/with outside async function
+
+attributes not supported
+
+bad compile mode
+
+bad conversion specifier
+
+bad typecode
+
+bad wake value
+
+bad wake value
+
+binary op %q not implemented
+
+bits must be 32 or less
+
+bits must be 8
+
+blksize % 16
+
+buffer too long
+
+buffer too short
+
+buffer too small
+
+buffer too small
+
+buffer too small
+
+buffer too small
+
+buffer too small
+
+buffers must be the same length
+
+bytecode overflow
+
+bytes value out of range
+
+bytes value out of range
+
+call super().__init__() first
+
+can query only one param
+
+can query only one param
+
+can query only one param
+
+can't add special method to already-subclassed class
+
+can't assign to expression
+
+can't assign to expression
+
+can't assign to expression
+
+can't cancel self
+
+can't convert %s to complex
+
+can't convert %s to float
+
+can't convert %s to int
+
+can't convert '%q' object to %q implicitly
+
+can't convert NaN to int
+
+can't convert inf to int
+
+can't create '%q' instances
+
+can't create thread
+
+can't declare nonlocal in outer code
+
+can't delete expression
+
+can't do binary op between '%q' and '%q'
+
+can't do unary op of '%q'
+
+can't encrypt & decrypt
+
+can't implicitly convert '%q' to 'bool'
+
+can't import name %q
+
+can't load from '%q'
+
+can't load from '%q'
+
+can't load with '%q' index
+
+can't perform relative import
+
+can't send non-None value to a just-started generator
+
+can't set attribute
+
+can't specify pos and kw args
+
+can't specify pos and kw args
+
+can't specify pos and kw args
+
+can't store '%q'
+
+can't store '%q'
+
+can't store to '%q'
+
+can't store to '%q'
+
+can't store with '%q' index
+
+can't switch from automatic field numbering to manual field specification
+
+can't switch from manual field specification to automatic field numbering
+
+can't truncate-divide a complex number
+
+can't unambiguously get sizeof scalar
+
+can't wait
+
+cannot emit native code for this architecture
+
+casting
+
+channel
+
+chr() arg not in range(0x110000)
+
+clock_div must be between 1 and 255
+
+cmd must be 0-255
+
+cmd must be 0-255
+
+cmd must be 0-255
+
+colour must be 0-65535 (RGB565)
+
+comparison of int and uint
+
+complex divide by zero
+
+conversion to object
+
+coordinates must be >= 0
+
+data argument length must match width %d
+
+database closed
+
+default 'except' must be last
+
+desc_cfg
+
+desc_dev
+
+desc_strs
+
+dict update sequence has wrong length
+
+div/mod not implemented for uint
+
+divide by zero
+
+divide by zero
+
+divide by zero
+
+divide by zero
+
+divide by zero
+
+duration and data must have same length
+
+duty must be from 0 to %u
+
+duty_ns must be from 0 to %d ns
+
+duty_u16 must be from 0 to %d
+
+either pos or kw args are allowed
+
+either pos or kw args are allowed
+
+either pos or kw args are allowed
+
+empty
+
+empty
+
+empty heap
+
+empty heap
+
+empty separator
+
+empty separator
+
+empty separator
+
+encoding
+
+ep
+
+error in regex
+
+esp_eth_driver_install failed
+
+esp_eth_driver_install failed with invalid argument
+
+esp_eth_driver_install failed with no memory for driver
+
+esp_event_handler_register failed
+
+esp_event_handler_register failed
+
+esp_netif_attach failed
+
+esp_netif_init failed
+
+esp_sleep_enable_touchpad_wakeup() failed
+
+esp_sleep_enable_ulp_wakeup() failed
+
+ethernet disable failed
+
+ethernet enable failed
+
+exceptions must derive from BaseException
+
+expected ':' after format specifier
+
+expecting a SPI object
+
+expecting a dict for keyword args
+
+expecting just a value for set
+
+expecting key:value for dict
+
+extra keyword arguments given
+
+extra positional arguments given
+
+failed setting MAC address
+
+failed to create I2S task
+
+failed to create UART event task
+
+falling
+
+filter
+
+format
+
+format needs a dict
+
+format string didn't convert all arguments
+
+format string needs more arguments
+
+frequency must be 20MHz, 40MHz, 80Mhz, 160MHz or 240MHz
+
+frequency must be from 1Hz to %dMHz
+
+full
+
+full
+
+function doesn't take keyword arguments
+
+function expected at most %d arguments, got %d
+
+function got multiple values for argument '%q'
+
+function got multiple values for argument '%q'
+
+function missing %d required positional arguments
+
+function missing keyword-only argument
+
+function missing required keyword argument '%q'
+
+function missing required positional argument #%d
+
+function takes %d positional arguments but %d were given
+
+function takes %d positional arguments but %d were given
+
+function takes %d positional arguments but %d were given
+
+generator already executing
+
+generator already executing
+
+generator ignored GeneratorExit
+
+generator raised StopIteration
+
+generator raised StopIteration
+
+handler must be None or callable
+
+hard IRQ is not supported
+
+hard IRQ unsupported
+
+hard Timers are not implemented
+
+hash is final
+
+heap must be a list
+
+id
+
+identifier redefined as global
+
+identifier redefined as nonlocal
+
+import * not at module level
+
+incompatible .mpy arch
+
+incompatible .mpy file
+
+incompatible .mpy file
+
+incomplete format
+
+incomplete format key
+
+incorrect padding
+
+int() arg 2 must be >= 2 and <= 36
+
+integer needed
+
+invalid LAN interface identifier
+
+invalid Timer number
+
+invalid UUID
+
+invalid WLAN interface identifier
+
+invalid addr
+
+invalid addr
+
+invalid addrsize
+
+invalid arguments
+
+invalid arguments
+
+invalid arguments as dns server
+
+invalid attenuation
+
+invalid auth
+
+invalid bit-width
+
+invalid bits
+
+invalid bits
+
+invalid bits
+
+invalid block id
+
+invalid buffer length
+
+invalid buffer length
+
+invalid buffer length
+
+invalid callback
+
+invalid cert
+
+invalid channel
+
+invalid char in UUID
+
+invalid characteristic UUID
+
+invalid characteristic tuple
+
+invalid config: SDMMC slot with SPI pin arguments
+
+invalid config: SPI slot with SDMMC pin arguments
+
+invalid configuration
+
+invalid configuration
+
+invalid configuration
+
+invalid configuration
+
+invalid data bits
+
+invalid descriptor UUID
+
+invalid dupterm index
+
+invalid flow control mask
+
+invalid format
+
+invalid format
+
+invalid format specifier
+
+invalid handler
+
+invalid handler
+
+invalid id
+
+invalid id
+
+invalid inversion mask
+
+invalid key
+
+invalid micropython decorator
+
+invalid micropython decorator
+
+invalid mode
+
+invalid phy address
+
+invalid phy type
+
+invalid pin
+
+invalid pin
+
+invalid pin
+
+invalid pin
+
+invalid pin for touchpad
+
+invalid pin for wake
+
+invalid service UUID
+
+invalid slot number
+
+invalid stop bits
+
+invalid syntax
+
+invalid syntax
+
+invalid syntax
+
+invalid syntax for integer with base %d
+
+invalid syntax for number
+
+issubclass() arg 1 must be a class
+
+issubclass() arg 2 must be a class or a tuple of classes
+
+join expects a list of str/bytes objects consistent with self object
+
+key
+
+keyword argument(s) not implemented - use normal args instead
+
+length must be 1-255
+
+lhs and rhs should be compatible
+
+local '%q' has type '%q' but source is '%q'
+
+local '%q' used before type known
+
+local variable referenced before assignment
+
+malformed f-string
+
+math domain error
+
+maximum
+
+memory allocation failed, heap is locked
+
+memoryview offset too large
+
+minimum
+
+mktime needs a tuple of length 8 or 9
+
+mode
+
+mode_high
+
+mode_low
+
+multiple *x in assignment
+
+multiple bases have instance lay-out conflict
+
+must query one param
+
+must query one param
+
+must query one param
+
+must query one param
+
+must raise an object
+
+must specify all of sck/mosi/miso
+
+must use keyword argument for key function
+
+name '%q' isn't defined
+
+name too long
+
+native code in .mpy unsupported
+
+native yield
+
+need more than %d values to unpack
+
+need more than %d values to unpack
+
+negative factorial
+
+negative shift count
+
+negative shift count
+
+negative shift count
+
+no active exception to reraise
+
+no binding for nonlocal found
+
+no free slots
+
+no matching ADC
+
+no module named '%q'
+
+no resources
+
+no resources
+
+no resources
+
+no resources
+
+no resources
+
+no resources
+
+no resources
+
+no such attribute
+
+non-default argument follows default argument
+
+non-hex digit
+
+not a constant
+
+num_symbols must be even and at least %d
+
+object '%s' isn't a tuple or list
+
+object not in sequence
+
+object of type '%s' has no len()
+
+object with buffer protocol required
+
+object with buffer protocol required
+
+one or more active timers use a different clock source, not supported by the current SoC.
+
+one or more active timers use a different clock source, not supported by the current SoC.
+
+only slices with step=1 (aka None) are supported
+
+only slices with step=1 (aka None) are supported
+
+only slices with step=1 (aka None) are supported
+
+only slices with step=1 (aka None) are supported
+
+opcode
+
+ord() expected a character, but string of length %d found
+
+out of %sPWM channels:%d
+
+out of %sPWM timers:%d
+
+out of memory
+
+output too small
+
+overflow converting long int to machine word
+
+overflow converting long int to machine word
+
+path must be str
+
+pin
+
+pop from an empty set
+
+pop from empty list
+
+popitem(): dictionary is empty
+
+positional arg after **
+
+positional arg after keyword arg
+
+pow() with 3 arguments requires integers
+
+ppp_connect failed
+
+ppp_set_default failed
+
+pppapi_free failed
+
+pppos_create failed
+
+pppos_create failed
+
+regex too complex
+
+requested length %d but object has length %d
+
+resolution_hz and clock_div are mutually exclusive
+
+resolution_hz must be positive
+
+return expected '%q' but got '%q'
+
+rising
+
+rotation must be 0-3
+
+rsplit(None,n)
+
+schedule queue full
+
+setting properties not supported
+
+sign not allowed in string format specifier
+
+sign not allowed with integer format specifier 'c'
+
+single '}' encountered in format string
+
+slice step can't be zero
+
+splitting with sub-captures
+
+stream operation not supported
+
+string argument without an encoding
+
+string argument without an encoding
+
+string index out of range
+
+string index out of range
+
+string indices must be integers, not %s
+
+struct: can't index
+
+struct: index out of range
+
+struct: no fields
+
+substring not found
+
+super() can't find self
+
+syntax error in JSON
+
+syntax error in uctypes descriptor
+
+threshold0
+
+threshold1
+
+ticks interval overflow
+
+timer not set
+
+too many args
+
+too many positional args
+
+too many values to unpack (expected %d)
+
+transfer on deinitialized SPI
+
+trigger
+
+trigger 0x%04x unsupported
+
+tuple index out of range
+
+tuple index out of range
+
+tx_carrier duty must be 0..100
+
+tx_carrier frequency must be >0
+
+type '%q' isn't an acceptable base type
+
+type object '%q' has no attribute '%q'
+
+type takes 1 or 3 arguments
+
+unexpected indent
+
+unexpected key
+
+unexpected key
+
+unexpected key
+
+unexpected key
+
+unexpected key
+
+unexpected key
+
+unexpected key
+
+unexpected keyword argument '%q'
+
+unexpected keyword argument '%q'
+
+unicode name escapes
+
+unindent doesn't match any outer indent level
+
+unknown config param
+
+unknown config param
+
+unknown config param
+
+unknown config param
+
+unknown config param
+
+unknown config param
+
+unknown format code '%c' for object of type '%s'
+
+unknown format code '%c' for object of type '%s'
+
+unknown format code '%c' for object of type '%s'
+
+unknown status param
+
+unknown type '%q'
+
+unmatched '{' in format
+
+unreadable attribute
+
+unsupported format character '%c' (0x%x) at index %d
+
+unsupported type for %q: '%s'
+
+unsupported types for %q: '%s', '%s'
+
+value
+
+value
+
+wbits
+
+width must be 1 or 4 (or 8 on slot 0)
+
+wrong number of arguments
+
+x,y must be >= 0
+
+x1>=x0 and y1>=y0 required
+
+zero step

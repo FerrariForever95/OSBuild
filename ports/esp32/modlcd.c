@@ -45,56 +45,6 @@
  *   moclcd.draw_rect(x, y, w, h, color)      -- outline; clipped silently if off-panel
  *   moclcd.draw_circle(x0, y0, r, color)     -- outline; clipped silently if off-panel
  *   moclcd.fill_circle(x0, y0, r, color)     -- filled; clipped silently if off-panel
- *
- *   moclcd.draw_text(x, y, text, fg, bg=None, font=0)
- *                                             -- like draw_text8x8 but with a `font` id;
- *                                                font=0 is the built-in 8x8 font
- *   moclcd.register_font(font_id, glyph_data, char_w, char_h, first_char, last_char)
- *                                             -- register an additional font (1..7);
- *                                                glyph_data is a column-major bitmap
- *                                                table, same byte layout as
- *                                                font_petme128_8x8
- *   moclcd.unregister_font(font_id)          -- free a previously registered font
- *   moclcd.font_metrics(font_id)             -- (char_w, char_h, first_char, last_char)
- *
- *   moclcd.mirror_enable()                   -- start mirroring every draw into an
- *                                                internal shadow framebuffer (~300KB
- *                                                RAM at 480x320); required before
- *                                                read_framebuffer() will work, since
- *                                                the panel itself has no readback bus
- *   moclcd.mirror_disable()                  -- stop mirroring (keeps the buffer)
- *   moclcd.mirror_free()                     -- stop mirroring and free the buffer
- *   moclcd.read_framebuffer(dest, x=0, y=0, w=None, h=None)
- *                                             -- copies the current (mirrored) frame,
- *                                                or a sub-rect of it, into your own
- *                                                pre-allocated `dest` buffer (e.g.
- *                                                bytearray); RGB565 MSB-first, same
- *                                                layout blit() expects; returns bytes
- *                                                written. Raises OSError if
- *                                                mirror_enable() wasn't called first.
- *
- *   moclcd.blit_fast(xs, ys, ws, hs, colors, count)
- *                                             -- batched fill_rect stream driven from
- *                                                one C call instead of `count` separate
- *                                                Python calls; xs/ys/ws/hs/colors are
- *                                                int32 arrays (e.g. array.array('i', ...))
- *                                                of length >= count. Used internally by
- *                                                the faster screen-open animation path.
- *
- * NOTE on draw_bmp() and the filesystem:
- *   draw_bmp() uses the C library's fopen(), which is routed through
- *   MicroPython's VFS -- exactly like Python's own open(). If it's
- *   called before anything has been mounted (os.mount(), or before
- *   the board's default flash mount has run -- e.g. from code that
- *   runs very early in boot.py, or a custom C init path that calls
- *   panel_init()/draw_bmp() before main.py), every path will fail to
- *   open even if the file will exist a moment later. draw_bmp() now
- *   detects this case and raises a clear OSError explaining it instead
- *   of a bare ENOENT that looks like a typo'd filename. Fix: call
- *   draw_bmp() (and anything that draws logos/backgrounds) only after
- *   the filesystem is mounted -- normally that just means "not from
- *   boot.py before the default mount, and not before main.py has had
- *   a chance to run".
  */
 
 #include "py/obj.h"
@@ -108,7 +58,6 @@
 #include "driver/ledc.h"
 #include "extmod/font_petme128_8x8.h"   /* same 8x8 font MicroPython's framebuf.text() uses */
 #include "py/mperrno.h"
-#include "extmod/vfs.h"
 
 #include <stdio.h>
 
@@ -120,7 +69,7 @@
 #define LCD_CMD_RAMWRC 0x3C   /* continuation write, used for pixel streaming */
 
 /* how many pixels we buffer per DMA chunk (2 bytes/pixel -> 4KB chunks) */
-#define FILL_CHUNK_PIXELS 32768
+#define FILL_CHUNK_PIXELS 2048
 
 /* ---- module state ---- */
 static esp_lcd_i80_bus_handle_t  s_bus       = NULL;
@@ -137,43 +86,10 @@ static bool                      s_bl_pwm_inited = false;
 static uint32_t                  s_bl_duty_max   = 255; /* set by backlight_init() from resolution_bits */
 static uint8_t                  *s_glyph_buf = NULL;    /* 8*8*2 bytes, DMA capable, reused per glyph */
 
-/* ---- shadow framebuffer (for read_framebuffer()) ----
- * The panel itself is write-only over the 8080 bus (no readback path),
- * so "reading the current frame" means mirroring every pixel we send
- * into a RAM copy as we send it, then handing that copy out on
- * request. This is opt-in (mirror_enable()) since it costs
- * width*height*2 bytes (~300KB at 480x320) and a bit of CPU per draw
- * call to keep in sync -- most apps that never call read_framebuffer()
- * shouldn't pay for it. */
-static uint16_t                 *s_shadow_fb      = NULL; /* w*h uint16 RGB565, native endianness */
-static bool                      s_shadow_enabled  = false;
-
 #define FONT_CHAR_W     8
 #define FONT_CHAR_H     8
 #define FONT_FIRST_CHAR 32
 #define FONT_LAST_CHAR  127
-
-/* ---- font registry (multi-font support) ----
- * font_petme128_8x8 remains font id 0 / the default. Additional fonts
- * can be registered from Python via register_font(id, glyph_bytes,
- * char_w, char_h, first_char, last_char) -- glyph_bytes must be a
- * column-major bitmap table exactly like font_petme128_8x8 (char_w
- * bytes per glyph, bit j of byte i is row j of column i), so any font
- * exported in that layout (e.g. converted offline from a .bdf/.ttf)
- * can be dropped in without rebuilding firmware. */
-#define MAX_FONTS 8
-typedef struct {
-    const uint8_t *data;     /* owned copy, column-major glyph table */
-    uint8_t        char_w;
-    uint8_t        char_h;
-    uint8_t        first_char;
-    uint8_t        last_char;
-    bool           in_use;
-} font_entry_t;
-
-static font_entry_t s_fonts[MAX_FONTS];
-static uint8_t *s_font_glyph_buf = NULL;   /* DMA scratch, grown on demand */
-static size_t   s_font_glyph_buf_cap = 0;
 
 /* -------------------------------------------------------------------
  * helpers
@@ -190,23 +106,6 @@ static void require_init(void)
     if (s_io == NULL) {
         mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("moclcd.init() must be called first"));
     }
-}
-
-/* Best-effort check for "has anything been mounted into MicroPython's
- * VFS yet". MP_STATE_VM(vfs_cur) is NULL/unset until the first mount
- * (os.mount(), or the board's default flash mount during boot.py)
- * happens; ports that mount internal flash automatically before
- * main.py runs will already show ready=true by the time user code
- * gets a chance to call draw_bmp(), so this only actually fires for
- * code that runs *before* that point (e.g. inside boot.py itself, or
- * a custom C init path that calls panel_init()/draw_bmp() too early). */
-static bool mp_vfs_mount_is_ready(void)
-{
-#if MICROPY_VFS
-    return MP_STATE_VM(vfs_cur) != NULL || MP_STATE_VM(vfs_mount_table) != NULL;
-#else
-    return true; /* no VFS layer compiled in: nothing to check, let fopen()'s own error stand */
-#endif
 }
 
 static void lcd_cmd_raw(uint8_t cmd, const void *buf, size_t len)
@@ -261,54 +160,6 @@ static void stream_solid(uint32_t total_pixels, uint16_t color)
     }
 }
 
-/* ---- shadow framebuffer mirroring helpers ----
- * Called right alongside the real DMA sends so the RAM copy always
- * matches what's on-panel (for whichever ops opt into mirroring; every
- * primitive that goes through do_fill_rect_clip/do_draw_pixel/blit/
- * draw_bmp/draw_glyph is covered). No-ops entirely (and cheaply) when
- * mirroring hasn't been turned on. */
-static void ensure_shadow_fb(void)
-{
-    if (s_shadow_fb == NULL) {
-        s_shadow_fb = heap_caps_malloc((size_t)s_width * (size_t)s_height * 2, MALLOC_CAP_DEFAULT);
-        if (s_shadow_fb == NULL) {
-            mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("no memory for shadow framebuffer"));
-        }
-        memset(s_shadow_fb, 0, (size_t)s_width * (size_t)s_height * 2);
-    }
-}
-
-static inline void shadow_set_px(int x, int y, uint16_t color)
-{
-    if (!s_shadow_enabled || s_shadow_fb == NULL) return;
-    if (x < 0 || y < 0 || x >= s_width || y >= s_height) return;
-    s_shadow_fb[(uint32_t)y * s_width + (uint32_t)x] = color;
-}
-
-static void shadow_fill_rect(int x, int y, int w, int h, uint16_t color)
-{
-    if (!s_shadow_enabled || s_shadow_fb == NULL) return;
-    for (int row = y; row < y + h; row++) {
-        for (int col = x; col < x + w; col++) {
-            shadow_set_px(col, row, color);
-        }
-    }
-}
-
-/* buf is RGB565 MSB-first bytes, exactly what blit()/draw_bmp() send
- * to the panel -- convert to native uint16 as we copy into the shadow. */
-static void shadow_blit_bytes(int x, int y, int w, int h, const uint8_t *buf)
-{
-    if (!s_shadow_enabled || s_shadow_fb == NULL) return;
-    for (int row = 0; row < h; row++) {
-        for (int col = 0; col < w; col++) {
-            size_t p = ((size_t)row * w + col) * 2;
-            uint16_t c = ((uint16_t)buf[p] << 8) | buf[p + 1];
-            shadow_set_px(x + col, y + row, c);
-        }
-    }
-}
-
 /* Clip a rectangle to the panel bounds in place. Returns false if the
  * result is empty (nothing to draw), unlike the strict fill_rect()
  * below which raises on out-of-bounds. Shapes like circles and lines
@@ -328,7 +179,6 @@ static void do_fill_rect_clip(int x, int y, int w, int h, uint16_t color)
     if (!clip_rect(&x, &y, &w, &h)) return;
     set_window((uint16_t)x, (uint16_t)y, (uint16_t)(x + w - 1), (uint16_t)(y + h - 1));
     stream_solid((uint32_t)w * (uint32_t)h, color);
-    shadow_fill_rect(x, y, w, h, color);
 }
 
 static void do_draw_pixel(int x, int y, uint16_t color)
@@ -336,7 +186,6 @@ static void do_draw_pixel(int x, int y, uint16_t color)
     if (x < 0 || y < 0 || x >= s_width || y >= s_height) return;
     set_window((uint16_t)x, (uint16_t)y, (uint16_t)x, (uint16_t)y);
     stream_solid(1, color);
-    shadow_set_px(x, y, color);
 }
 
 /* -------------------------------------------------------------------
@@ -344,57 +193,30 @@ static void do_draw_pixel(int x, int y, uint16_t color)
  * byte i is column i, bit j of that byte is row j. Same table and
  * bit layout MicroPython's framebuf.text() uses internally.
  * ---------------------------------------------------------------- */
-static void ensure_glyph_buf(size_t needed_bytes)
+static void ensure_glyph_buf(void)
 {
-    if (s_glyph_buf == NULL || s_font_glyph_buf_cap < needed_bytes) {
-        if (s_glyph_buf) heap_caps_free(s_glyph_buf);
-        s_glyph_buf = heap_caps_malloc(needed_bytes, MALLOC_CAP_DMA);
+    if (s_glyph_buf == NULL) {
+        s_glyph_buf = heap_caps_malloc(FONT_CHAR_W * FONT_CHAR_H * 2, MALLOC_CAP_DMA);
         if (s_glyph_buf == NULL) {
-            s_font_glyph_buf_cap = 0;
             mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("no DMA memory for glyph buffer"));
         }
-        s_font_glyph_buf_cap = needed_bytes;
     }
 }
 
-/* Resolve a font id (0 = built-in font_petme128_8x8, 1..MAX_FONTS-1 =
- * user-registered via register_font()) to its glyph table + metrics.
- * Falls back to font 0 for an unregistered id rather than raising, so
- * a typo'd font id degrades gracefully instead of crashing a draw
- * loop mid-frame. */
-static void resolve_font(int font_id, const uint8_t **data, uint8_t *cw, uint8_t *ch,
-                          uint8_t *first, uint8_t *last)
+/* Draws one 8x8 glyph at (x,y). If bg_transparent, only foreground
+ * pixels are plotted (one address-window per lit pixel -- slower, but
+ * leaves whatever's already behind the glyph untouched). Otherwise the
+ * whole 8x8 cell (fg+bg) is built in a small buffer and sent as a
+ * single DMA transfer when it fully fits on-panel. */
+static void draw_glyph(int x, int y, char c, uint16_t fg, uint16_t bg, bool bg_transparent)
 {
-    if (font_id == 0 || font_id < 0 || font_id >= MAX_FONTS || !s_fonts[font_id].in_use) {
-        *data = font_petme128_8x8;
-        *cw = FONT_CHAR_W; *ch = FONT_CHAR_H;
-        *first = FONT_FIRST_CHAR; *last = FONT_LAST_CHAR;
-        return;
-    }
-    font_entry_t *f = &s_fonts[font_id];
-    *data = f->data; *cw = f->char_w; *ch = f->char_h;
-    *first = f->first_char; *last = f->last_char;
-}
-
-/* Draws one glyph (from font `font_id`) at (x,y). If bg_transparent,
- * only foreground pixels are plotted (one address-window per lit
- * pixel -- slower, but leaves whatever's already behind the glyph
- * untouched). Otherwise the whole cell (fg+bg) is built in a small
- * buffer and sent as a single DMA transfer when it fully fits
- * on-panel. Mirrors into the shadow framebuffer either way. */
-static void draw_glyph_font(int x, int y, char c, uint16_t fg, uint16_t bg, bool bg_transparent, int font_id)
-{
-    const uint8_t *font_data; uint8_t cw, ch, first, last;
-    resolve_font(font_id, &font_data, &cw, &ch, &first, &last);
-
-    if (c < (char)first || c > (char)last) c = ' ';
-    if (c < (char)first) c = (char)first; /* space itself out of range: clamp instead of UB */
-    const uint8_t *glyph = &font_data[((uint8_t)c - first) * cw];
+    if (c < FONT_FIRST_CHAR || c > FONT_LAST_CHAR) c = ' ';
+    const uint8_t *glyph = &font_petme128_8x8[(c - FONT_FIRST_CHAR) * 8];
 
     if (bg_transparent) {
-        for (int col = 0; col < cw; col++) {
+        for (int col = 0; col < FONT_CHAR_W; col++) {
             uint8_t line = glyph[col];
-            for (int row = 0; row < ch; row++) {
+            for (int row = 0; row < FONT_CHAR_H; row++) {
                 if ((line >> row) & 1) {
                     do_draw_pixel(x + col, y + row, fg);
                 }
@@ -403,45 +225,36 @@ static void draw_glyph_font(int x, int y, char c, uint16_t fg, uint16_t bg, bool
         return;
     }
 
-    int cx = x, cy = y, cclw = cw, cclh = ch;
-    if (!clip_rect(&cx, &cy, &cclw, &cclh)) return;
+    int cx = x, cy = y, cw = FONT_CHAR_W, ch = FONT_CHAR_H;
+    if (!clip_rect(&cx, &cy, &cw, &ch)) return;
 
-    if (cclw != cw || cclh != ch) {
+    if (cw != FONT_CHAR_W || ch != FONT_CHAR_H) {
         /* clipped by a screen edge: fall back to per-pixel so we don't
            send pixels that belong to a different part of the screen */
-        for (int col = 0; col < cw; col++) {
+        for (int col = 0; col < FONT_CHAR_W; col++) {
             uint8_t line = glyph[col];
-            for (int row = 0; row < ch; row++) {
+            for (int row = 0; row < FONT_CHAR_H; row++) {
                 do_draw_pixel(x + col, y + row, ((line >> row) & 1) ? fg : bg);
             }
         }
         return;
     }
 
-    size_t need = (size_t)cw * (size_t)ch * 2;
-    ensure_glyph_buf(need);
+    ensure_glyph_buf();
     uint8_t fg_hi = (uint8_t)(fg >> 8), fg_lo = (uint8_t)(fg & 0xFF);
     uint8_t bg_hi = (uint8_t)(bg >> 8), bg_lo = (uint8_t)(bg & 0xFF);
 
-    for (int row = 0; row < ch; row++) {
-        for (int col = 0; col < cw; col++) {
+    for (int row = 0; row < FONT_CHAR_H; row++) {
+        for (int col = 0; col < FONT_CHAR_W; col++) {
             bool on = (glyph[col] >> row) & 1;
-            int p = (row * cw + col) * 2;
+            int p = (row * FONT_CHAR_W + col) * 2;
             s_glyph_buf[p]     = on ? fg_hi : bg_hi;
             s_glyph_buf[p + 1] = on ? fg_lo : bg_lo;
         }
     }
 
-    set_window((uint16_t)x, (uint16_t)y, (uint16_t)(x + cw - 1), (uint16_t)(y + ch - 1));
-    io_check(esp_lcd_panel_io_tx_color(s_io, LCD_CMD_RAMWRC, s_glyph_buf, need), "text");
-    shadow_blit_bytes(x, y, cw, ch, s_glyph_buf);
-}
-
-/* Back-compat wrapper: original 8x8-only call sites (draw_text8x8)
- * keep working unchanged, always using font 0. */
-static void draw_glyph(int x, int y, char c, uint16_t fg, uint16_t bg, bool bg_transparent)
-{
-    draw_glyph_font(x, y, c, fg, bg, bg_transparent, 0);
+    set_window((uint16_t)x, (uint16_t)y, (uint16_t)(x + FONT_CHAR_W - 1), (uint16_t)(y + FONT_CHAR_H - 1));
+    io_check(esp_lcd_panel_io_tx_color(s_io, LCD_CMD_RAMWRC, s_glyph_buf, FONT_CHAR_W * FONT_CHAR_H * 2), "text");
 }
 
 /* -------------------------------------------------------------------
@@ -469,153 +282,6 @@ static mp_obj_t moclcd_draw_text8x8(size_t n_args, const mp_obj_t *args_in)
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(moclcd_draw_text8x8_obj, 4, 5, moclcd_draw_text8x8);
-
-/* -------------------------------------------------------------------
- * moclcd.register_font(font_id, glyph_data, char_w, char_h, first_char, last_char)
- *
- * Registers an additional font (1..MAX_FONTS-1; font id 0 is always
- * the built-in font_petme128_8x8 and can't be overwritten). glyph_data
- * is a bytes-like object: a column-major bitmap table just like
- * font_petme128_8x8 -- char_w bytes per glyph, bit j of byte i is row
- * j of column i -- covering (last_char - first_char + 1) characters.
- * The data is copied into internal storage, so the Python-side buffer
- * doesn't need to stay alive afterward.
- *
- * Once registered, use draw_text(x, y, text, fg, bg=None, font=font_id)
- * to draw with it.
- * ---------------------------------------------------------------- */
-static mp_obj_t moclcd_register_font(size_t n_args, const mp_obj_t *args_in)
-{
-    int font_id = mp_obj_get_int(args_in[0]);
-    if (font_id <= 0 || font_id >= MAX_FONTS) {
-        mp_raise_ValueError(MP_ERROR_TEXT("font_id must be 1..MAX_FONTS-1 (0 is the built-in font)"));
-    }
-
-    mp_buffer_info_t bufinfo;
-    mp_get_buffer_raise(args_in[1], &bufinfo, MP_BUFFER_READ);
-
-    int char_w = mp_obj_get_int(args_in[2]);
-    int char_h = mp_obj_get_int(args_in[3]);
-    int first  = mp_obj_get_int(args_in[4]);
-    int last   = mp_obj_get_int(args_in[5]);
-
-    if (char_w <= 0 || char_w > 32 || char_h <= 0 || char_h > 32 ||
-        first < 0 || last > 255 || last < first) {
-        mp_raise_ValueError(MP_ERROR_TEXT("invalid font metrics"));
-    }
-
-    size_t n_chars = (size_t)(last - first + 1);
-    size_t expected_len = n_chars * (size_t)char_w;
-    if (bufinfo.len != expected_len) {
-        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT(
-            "glyph_data length %d does not match char_w*num_chars (%d)"),
-            (int)bufinfo.len, (int)expected_len);
-    }
-
-    font_entry_t *f = &s_fonts[font_id];
-    if (f->in_use && f->data) {
-        heap_caps_free((void *)f->data);
-        f->data = NULL;
-        f->in_use = false;
-    }
-
-    uint8_t *copy = heap_caps_malloc(expected_len, MALLOC_CAP_DEFAULT);
-    if (!copy) {
-        mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("no memory to register font"));
-    }
-    memcpy(copy, bufinfo.buf, expected_len);
-
-    f->data       = copy;
-    f->char_w     = (uint8_t)char_w;
-    f->char_h     = (uint8_t)char_h;
-    f->first_char = (uint8_t)first;
-    f->last_char  = (uint8_t)last;
-    f->in_use     = true;
-
-    return mp_const_none;
-}
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(moclcd_register_font_obj, 6, 6, moclcd_register_font);
-
-/* -------------------------------------------------------------------
- * moclcd.unregister_font(font_id)
- * Frees a previously registered font. Font 0 (built-in) can't be
- * unregistered -- this is a no-op for font_id 0.
- * ---------------------------------------------------------------- */
-static mp_obj_t moclcd_unregister_font(mp_obj_t font_id_in)
-{
-    int font_id = mp_obj_get_int(font_id_in);
-    if (font_id <= 0 || font_id >= MAX_FONTS) return mp_const_none;
-    font_entry_t *f = &s_fonts[font_id];
-    if (f->in_use && f->data) {
-        heap_caps_free((void *)f->data);
-    }
-    memset(f, 0, sizeof(*f));
-    return mp_const_none;
-}
-static MP_DEFINE_CONST_FUN_OBJ_1(moclcd_unregister_font_obj, moclcd_unregister_font);
-
-/* -------------------------------------------------------------------
- * moclcd.draw_text(x, y, text, fg, bg=None, font=0)
- * Same semantics as draw_text8x8(), but with an extra `font` id
- * selecting which registered font table to use (0 = built-in 8x8).
- * Character advance uses that font's own char_w, so mixed-width fonts
- * lay out correctly without any Python-side width bookkeeping.
- * ---------------------------------------------------------------- */
-static mp_obj_t moclcd_draw_text(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args)
-{
-    require_init();
-
-    enum { ARG_x, ARG_y, ARG_text, ARG_fg, ARG_bg, ARG_font };
-    static const mp_arg_t allowed[] = {
-        { MP_QSTR_x,    MP_ARG_REQUIRED | MP_ARG_INT, {.u_int = 0} },
-        { MP_QSTR_y,    MP_ARG_REQUIRED | MP_ARG_INT, {.u_int = 0} },
-        { MP_QSTR_text, MP_ARG_REQUIRED | MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
-        { MP_QSTR_fg,   MP_ARG_REQUIRED | MP_ARG_INT, {.u_int = 0} },
-        { MP_QSTR_bg,   MP_ARG_KW_ONLY   | MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
-        { MP_QSTR_font, MP_ARG_KW_ONLY   | MP_ARG_INT, {.u_int = 0} },
-    };
-    mp_arg_val_t args[MP_ARRAY_SIZE(allowed)];
-    mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed), allowed, args);
-
-    int x = args[ARG_x].u_int;
-    int y = args[ARG_y].u_int;
-    size_t len;
-    const char *text = mp_obj_str_get_data(args[ARG_text].u_obj, &len);
-    uint16_t fg = (uint16_t)args[ARG_fg].u_int;
-    bool bg_transparent = (args[ARG_bg].u_obj == mp_const_none);
-    uint16_t bg = bg_transparent ? 0 : (uint16_t)mp_obj_get_int(args[ARG_bg].u_obj);
-    int font_id = args[ARG_font].u_int;
-
-    const uint8_t *font_data; uint8_t cw, ch, first, last;
-    resolve_font(font_id, &font_data, &cw, &ch, &first, &last);
-    (void)font_data; (void)ch; (void)first; (void)last;
-
-    for (size_t i = 0; i < len; i++) {
-        draw_glyph_font(x + (int)i * cw, y, text[i], fg, bg, bg_transparent, font_id);
-    }
-    return mp_const_none;
-}
-static MP_DEFINE_CONST_FUN_OBJ_KW(moclcd_draw_text_obj, 4, moclcd_draw_text);
-
-/* -------------------------------------------------------------------
- * moclcd.font_metrics(font_id)
- * Returns (char_w, char_h, first_char, last_char) for a font id, so
- * Python-side layout code (centering, wrapping) doesn't need to
- * hardcode 8x8 assumptions when a custom font is in use.
- * ---------------------------------------------------------------- */
-static mp_obj_t moclcd_font_metrics(mp_obj_t font_id_in)
-{
-    int font_id = mp_obj_get_int(font_id_in);
-    const uint8_t *font_data; uint8_t cw, ch, first, last;
-    resolve_font(font_id, &font_data, &cw, &ch, &first, &last);
-    (void)font_data;
-    mp_obj_t tuple[4] = {
-        mp_obj_new_int(cw), mp_obj_new_int(ch),
-        mp_obj_new_int(first), mp_obj_new_int(last),
-    };
-    return mp_obj_new_tuple(4, tuple);
-}
-static MP_DEFINE_CONST_FUN_OBJ_1(moclcd_font_metrics_obj, moclcd_font_metrics);
 
 /* -------------------------------------------------------------------
  * moclcd.draw_bmp(path, x, y, w=None, h=None, max_w=None, max_h=None)
@@ -656,22 +322,6 @@ static mp_obj_t moclcd_draw_bmp(size_t n_args, const mp_obj_t *pos_args, mp_map_
 
     FILE *f = fopen(path, "rb");
     if (!f) {
-        /* This is very commonly *not* a missing file -- it's this
-           function being called before MicroPython's VFS is mounted
-           yet (e.g. from panel_init()/boot code that runs before
-           os.mount()/the filesystem is set up). fopen()'s C stdio
-           layer routes through the VFS the same way MicroPython's own
-           open() does, so if nothing is mounted there's no root to
-           resolve `path` against and every path looks like ENOENT,
-           even a path that will exist a moment later once the FS is
-           mounted. Surface that distinction instead of a bare ENOENT
-           so it's obvious what to fix, rather than looking like a
-           typo'd filename. */
-        if (!mp_vfs_mount_is_ready()) {
-            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT(
-                "draw_bmp: filesystem not mounted yet -- call draw_bmp() "
-                "after os.mount()/VFS init completes, not from early boot code"));
-        }
         mp_raise_OSError(MP_ENOENT);
     }
 
@@ -751,7 +401,6 @@ static mp_obj_t moclcd_draw_bmp(size_t n_args, const mp_obj_t *pos_args, mp_map_
 
     set_window((uint16_t)dx, (uint16_t)dy, (uint16_t)(dx + dw - 1), (uint16_t)(dy + dh - 1));
     io_check(esp_lcd_panel_io_tx_color(s_io, LCD_CMD_RAMWRC, img, (size_t)dw * (size_t)dh * 2), "bmp");
-    shadow_blit_bytes(dx, dy, dw, dh, img);
 
     heap_caps_free(row_buf);
     heap_caps_free(img);
@@ -778,16 +427,6 @@ static mp_obj_t moclcd_init(size_t n_args, const mp_obj_t *pos_args, mp_map_t *k
     };
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed)];
     mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed), allowed, args);
-
-    if (s_shadow_fb && (s_width != (uint16_t)args[ARG_width].u_int ||
-                         s_height != (uint16_t)args[ARG_height].u_int)) {
-        /* dimensions changing on a re-init: old shadow buffer is the
-           wrong size, drop it -- ensure_shadow_fb() will reallocate
-           lazily at the new size next time mirroring is needed */
-        heap_caps_free(s_shadow_fb);
-        s_shadow_fb = NULL;
-        s_shadow_enabled = false;
-    }
 
     s_width  = (uint16_t)args[ARG_width].u_int;
     s_height = (uint16_t)args[ARG_height].u_int;
@@ -1105,7 +744,6 @@ static mp_obj_t moclcd_blit(size_t n_args, const mp_obj_t *args_in)
 
     set_window((uint16_t)x, (uint16_t)y, (uint16_t)(x + w - 1), (uint16_t)(y + h - 1));
     io_check(esp_lcd_panel_io_tx_color(s_io, LCD_CMD_RAMWRC, bufinfo.buf, bufinfo.len), "blit");
-    shadow_blit_bytes(x, y, w, h, (const uint8_t *)bufinfo.buf);
 
     return mp_const_none;
 }
@@ -1245,173 +883,6 @@ static mp_obj_t moclcd_draw_circle(size_t n_args, const mp_obj_t *args_in)
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(moclcd_draw_circle_obj, 4, 4, moclcd_draw_circle);
 
 /* -------------------------------------------------------------------
- * moclcd.mirror_enable()
- * Turns on shadow-framebuffer mirroring: every fill_rect/draw_pixel/
- * blit/draw_bmp/draw_text call from this point on also writes into an
- * internal width*height*2-byte RAM copy, so read_framebuffer() can
- * hand back "what's currently on screen" even though the panel itself
- * has no readback path. Costs ~300KB RAM at 480x320 -- call this once
- * near startup if you'll need frame capture at all; leave it off (the
- * default) otherwise.
- * ---------------------------------------------------------------- */
-static mp_obj_t moclcd_mirror_enable(void)
-{
-    require_init();
-    ensure_shadow_fb();
-    s_shadow_enabled = true;
-    return mp_const_none;
-}
-static MP_DEFINE_CONST_FUN_OBJ_0(moclcd_mirror_enable_obj, moclcd_mirror_enable);
-
-/* -------------------------------------------------------------------
- * moclcd.mirror_disable()
- * Stops mirroring (draw calls stop paying the RAM-copy cost). The
- * shadow buffer memory itself is kept around (not freed) so a later
- * mirror_enable() doesn't need to re-allocate; call mirror_free() if
- * you actually want the memory back.
- * ---------------------------------------------------------------- */
-static mp_obj_t moclcd_mirror_disable(void)
-{
-    s_shadow_enabled = false;
-    return mp_const_none;
-}
-static MP_DEFINE_CONST_FUN_OBJ_0(moclcd_mirror_disable_obj, moclcd_mirror_disable);
-
-/* -------------------------------------------------------------------
- * moclcd.mirror_free()
- * Frees the shadow framebuffer's memory and turns mirroring off.
- * ---------------------------------------------------------------- */
-static mp_obj_t moclcd_mirror_free(void)
-{
-    s_shadow_enabled = false;
-    if (s_shadow_fb) {
-        heap_caps_free(s_shadow_fb);
-        s_shadow_fb = NULL;
-    }
-    return mp_const_none;
-}
-static MP_DEFINE_CONST_FUN_OBJ_0(moclcd_mirror_free_obj, moclcd_mirror_free);
-
-/* -------------------------------------------------------------------
- * moclcd.read_framebuffer(dest, x=0, y=0, w=None, h=None)
- *
- * Copies the current shadow framebuffer contents (or a sub-rectangle
- * of it) into `dest`, forwarding it to the caller's own buffer/
- * variable instead of allocating a new one each call. `dest` must be
- * a pre-allocated writable buffer (e.g. bytearray) of at least
- * w*h*2 bytes -- RGB565, MSB first per pixel, same layout blit()
- * expects, so the result can be fed straight back into blit() (e.g.
- * to restore a region, or save a "screenshot" to a file).
- *
- * Requires mirror_enable() to have been called first (raises OSError
- * otherwise, since there's nothing to read back -- the panel itself
- * can't be read from). Returns the number of bytes written.
- * ---------------------------------------------------------------- */
-static mp_obj_t moclcd_read_framebuffer(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args)
-{
-    require_init();
-
-    enum { ARG_dest, ARG_x, ARG_y, ARG_w, ARG_h };
-    static const mp_arg_t allowed[] = {
-        { MP_QSTR_dest, MP_ARG_REQUIRED | MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
-        { MP_QSTR_x,    MP_ARG_KW_ONLY  | MP_ARG_INT, {.u_int = 0} },
-        { MP_QSTR_y,    MP_ARG_KW_ONLY  | MP_ARG_INT, {.u_int = 0} },
-        { MP_QSTR_w,    MP_ARG_KW_ONLY  | MP_ARG_INT, {.u_int = 0} }, /* 0 = full width */
-        { MP_QSTR_h,    MP_ARG_KW_ONLY  | MP_ARG_INT, {.u_int = 0} }, /* 0 = full height */
-    };
-    mp_arg_val_t args[MP_ARRAY_SIZE(allowed)];
-    mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed), allowed, args);
-
-    if (!s_shadow_enabled || s_shadow_fb == NULL) {
-        mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT(
-            "read_framebuffer: call mirror_enable() first -- the panel has no readback path, "
-            "only the shadow copy can be read"));
-    }
-
-    int x = args[ARG_x].u_int;
-    int y = args[ARG_y].u_int;
-    int w = args[ARG_w].u_int > 0 ? args[ARG_w].u_int : s_width;
-    int h = args[ARG_h].u_int > 0 ? args[ARG_h].u_int : s_height;
-
-    if (x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > s_width || y + h > s_height) {
-        mp_raise_ValueError(MP_ERROR_TEXT("read_framebuffer region out of bounds"));
-    }
-
-    mp_buffer_info_t bufinfo;
-    mp_get_buffer_raise(args[ARG_dest].u_obj, &bufinfo, MP_BUFFER_WRITE);
-
-    size_t needed = (size_t)w * (size_t)h * 2;
-    if (bufinfo.len < needed) {
-        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT(
-            "dest buffer too small: need %d bytes, got %d"),
-            (int)needed, (int)bufinfo.len);
-    }
-
-    uint8_t *out = (uint8_t *)bufinfo.buf;
-    for (int row = 0; row < h; row++) {
-        const uint16_t *src_row = &s_shadow_fb[(size_t)(y + row) * s_width + x];
-        uint8_t *dst_row = out + (size_t)row * w * 2;
-        for (int col = 0; col < w; col++) {
-            uint16_t c = src_row[col];
-            dst_row[col * 2]     = (uint8_t)(c >> 8);
-            dst_row[col * 2 + 1] = (uint8_t)(c & 0xFF);
-        }
-    }
-
-    return mp_obj_new_int((mp_int_t)needed);
-}
-static MP_DEFINE_CONST_FUN_OBJ_KW(moclcd_read_framebuffer_obj, 1, moclcd_read_framebuffer);
-
-/* -------------------------------------------------------------------
- * moclcd.blit_fast(ops_x, ops_y, ops_w, ops_h, ops_color, count, mode)
- *
- * Batched rectangle stream for driving animations from C instead of
- * looping fill_rect() calls one at a time from Python. Each Python
- * fill_rect() call pays MicroPython call overhead (arg unpacking,
- * bounds validation, a full esp_lcd_panel_io round trip) even for
- * tiny 1px animation-frame slivers; an open/close "genie" animation
- * can issue hundreds of these per second. blit_fast() takes four
- * equal-length int arrays (already-computed x/y/w/h for a batch of
- * rects, e.g. one whole animation frame's worth) plus a matching color
- * array, and streams them all in a single C-side loop with one
- * mp_arg parse instead of one per rect -- the DMA pipelining
- * (trans_queue_depth) does the rest.
- *
- * Arrays are any object supporting the buffer protocol interpreted as
- * int32 (e.g. array.array('i', [...])); all five must be the same
- * length >= count.
- * ---------------------------------------------------------------- */
-static mp_obj_t moclcd_blit_fast(size_t n_args, const mp_obj_t *args_in)
-{
-    require_init();
-
-    mp_buffer_info_t bx, by, bw, bh, bc;
-    mp_get_buffer_raise(args_in[0], &bx, MP_BUFFER_READ);
-    mp_get_buffer_raise(args_in[1], &by, MP_BUFFER_READ);
-    mp_get_buffer_raise(args_in[2], &bw, MP_BUFFER_READ);
-    mp_get_buffer_raise(args_in[3], &bh, MP_BUFFER_READ);
-    mp_get_buffer_raise(args_in[4], &bc, MP_BUFFER_READ);
-    int count = mp_obj_get_int(args_in[5]);
-
-    const int32_t *xs = (const int32_t *)bx.buf;
-    const int32_t *ys = (const int32_t *)by.buf;
-    const int32_t *ws = (const int32_t *)bw.buf;
-    const int32_t *hs = (const int32_t *)bh.buf;
-    const int32_t *cs = (const int32_t *)bc.buf;
-
-    size_t need = (size_t)count * sizeof(int32_t);
-    if (bx.len < need || by.len < need || bw.len < need || bh.len < need || bc.len < need) {
-        mp_raise_ValueError(MP_ERROR_TEXT("blit_fast: arrays shorter than count"));
-    }
-
-    for (int i = 0; i < count; i++) {
-        do_fill_rect_clip((int)xs[i], (int)ys[i], (int)ws[i], (int)hs[i], (uint16_t)cs[i]);
-    }
-    return mp_const_none;
-}
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(moclcd_blit_fast_obj, 6, 6, moclcd_blit_fast);
-
-/* -------------------------------------------------------------------
  * moclcd.fill_circle(x0, y0, r, color)
  * Midpoint circle algorithm filled via vertical spans (same approach
  * Adafruit_GFX uses) -- each span goes through the DMA fill path
@@ -1472,21 +943,6 @@ static const mp_rom_map_elem_t moclcd_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_fill_circle), MP_ROM_PTR(&moclcd_fill_circle_obj) },
     { MP_ROM_QSTR(MP_QSTR_draw_text8x8),MP_ROM_PTR(&moclcd_draw_text8x8_obj)},   // ADD THIS
     { MP_ROM_QSTR(MP_QSTR_draw_bmp),    MP_ROM_PTR(&moclcd_draw_bmp_obj)    },   // ADD THIS
-
-    /* multi-font support */
-    { MP_ROM_QSTR(MP_QSTR_draw_text),        MP_ROM_PTR(&moclcd_draw_text_obj)        },
-    { MP_ROM_QSTR(MP_QSTR_register_font),    MP_ROM_PTR(&moclcd_register_font_obj)    },
-    { MP_ROM_QSTR(MP_QSTR_unregister_font),  MP_ROM_PTR(&moclcd_unregister_font_obj)  },
-    { MP_ROM_QSTR(MP_QSTR_font_metrics),     MP_ROM_PTR(&moclcd_font_metrics_obj)     },
-
-    /* shadow framebuffer / readback */
-    { MP_ROM_QSTR(MP_QSTR_mirror_enable),    MP_ROM_PTR(&moclcd_mirror_enable_obj)    },
-    { MP_ROM_QSTR(MP_QSTR_mirror_disable),   MP_ROM_PTR(&moclcd_mirror_disable_obj)   },
-    { MP_ROM_QSTR(MP_QSTR_mirror_free),      MP_ROM_PTR(&moclcd_mirror_free_obj)      },
-    { MP_ROM_QSTR(MP_QSTR_read_framebuffer), MP_ROM_PTR(&moclcd_read_framebuffer_obj) },
-
-    /* fast batched animation path */
-    { MP_ROM_QSTR(MP_QSTR_blit_fast),        MP_ROM_PTR(&moclcd_blit_fast_obj)        },
 };
 static MP_DEFINE_CONST_DICT(moclcd_globals, moclcd_globals_table);
 

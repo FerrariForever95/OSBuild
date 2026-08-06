@@ -1,0 +1,14 @@
+invalid configuration
+SPI device already freed
+invalid configuration
+SPI bus already freed
+invalid bits
+invalid configuration
+SPI host already in use
+invalid configuration
+out of memory
+no free slots
+transfer on deinitialized SPI
+buffer too short
+SPI(%d) doesn't exist
+expecting a SPI object

@@ -1,0 +1,28 @@
+Wifi Not Initialized
+Wifi Not Started
+Wifi Not Stopped
+Wifi Invalid Interface
+Wifi Invalid Mode
+Wifi Internal State Error
+Wifi Internal Error
+Wifi Internal NVS Error
+Wifi Invalid MAC Address
+Wifi SSID Invalid
+Wifi Invalid Password
+Wifi Wakeup Failure
+Wifi Would Block
+Wifi Not Connected
+WiFi Out of Memory
+Wifi Unknown Error 0x%04x
+invalid arguments
+must query one param
+unexpected key
+can't specify pos and kw args
+invalid arguments as dns server
+unexpected key
+must query one param
+unexpected key
+unexpected key
+can't specify pos and kw args
+unexpected key
+unexpected key

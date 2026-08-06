@@ -1,0 +1,13 @@
+pppapi_free failed
+either pos or kw args are allowed
+can query only one param
+unknown config param
+pppos_create failed
+invalid auth
+ppp_set_default failed
+ppp_connect failed
+PPP not active
+must query one param
+unexpected key
+setting properties not supported
+pppos_create failed

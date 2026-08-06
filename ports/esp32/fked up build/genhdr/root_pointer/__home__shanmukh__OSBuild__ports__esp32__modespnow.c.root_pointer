@@ -1,0 +1,1 @@
+MP_REGISTER_ROOT_POINTER(struct _esp_espnow_obj_t *espnow_singleton);

@@ -1,0 +1,20 @@
+%s failed: %d
+moclcd.init() must be called first
+no DMA memory for fill buffer
+no memory for shadow framebuffer
+no DMA memory for glyph buffer
+font_id must be 1..MAX_FONTS-1 (0 is the built-in font)
+invalid font metrics
+glyph_data length %d does not match char_w*num_chars (%d)
+no memory to register font
+not a BMP file
+only uncompressed 24-bit BMP is supported
+no memory for bmp load
+no reset pin configured
+moclcd.backlight_init() must be called first
+fill_rect out of bounds
+blit out of bounds
+buffer size does not match w*h*2
+read_framebuffer region out of bounds
+dest buffer too small: need %d bytes, got %d
+blit_fast: arrays shorter than count

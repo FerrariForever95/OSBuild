@@ -1,0 +1,17 @@
+invalid buffer length
+failed setting MAC address
+invalid LAN interface identifier
+invalid phy address
+invalid phy type
+esp_netif_init failed
+esp_event_handler_register failed
+esp_event_handler_register failed
+esp_eth_driver_install failed with invalid argument
+esp_eth_driver_install failed with no memory for driver
+esp_eth_driver_install failed
+esp_netif_attach failed
+ethernet enable failed
+ethernet disable failed
+either pos or kw args are allowed
+can query only one param
+unknown config param

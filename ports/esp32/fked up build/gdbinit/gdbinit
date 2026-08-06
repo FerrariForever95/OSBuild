@@ -1,0 +1,2 @@
+source /home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/gdbinit/symbols
+source /home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/gdbinit/connect

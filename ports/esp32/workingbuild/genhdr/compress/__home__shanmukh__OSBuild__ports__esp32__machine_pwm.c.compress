@@ -1,0 +1,9 @@
+PWM is inactive
+duty_u16 must be from 0 to %d
+duty must be from 0 to %u
+duty_ns must be from 0 to %d ns
+frequency must be from 1Hz to %dMHz
+one or more active timers use a different clock source, not supported by the current SoC.
+out of %sPWM timers:%d
+one or more active timers use a different clock source, not supported by the current SoC.
+out of %sPWM channels:%d

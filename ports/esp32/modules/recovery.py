@@ -1,628 +1,47 @@
-print("ZenCMD/2 initializing...")
+"""
+RecoveryShell.py -- Zeno OS minimal recovery shell.
+
+Meant to be frozen into ESP32 firmware alongside Recovery.py (see
+bin/Recovery/Recovery.py). This is deliberately a small subset of
+ZenCMD.py's command set -- just enough to look around, fix, and
+re-populate a broken filesystem -- not a full shell replacement.
+
+Hard rule: this file must import cleanly and RecoveryShell().run() must
+start cleanly even if '/' is completely empty, Services.py doesn't
+exist, zeno.py doesn't exist, and nothing has ever been installed.
+Every filesystem call goes through plain `os`/`open()` -- never
+Services.FileManager -- because FileManager assumes a metadata tree
+that plain 'os' access doesn't need and recovery can't depend on.
+
+Anything that touches an optional subsystem (Services, PackageManager,
+Recovery itself) is probed lazily, inside the command that needs it,
+never at import time or shell-start time. A missing subsystem prints
+one clear line and the shell keeps going -- it never crashes and never
+raises an exception the user can see.
+
+Usage on-device:
+
+    >>> import RecoveryShell
+    >>> RecoveryShell.run()
+
+or, if frozen and you want it auto-available:
+
+    >>> from RecoveryShell import RecoveryShell
+    >>> RecoveryShell().run()
+"""
 
 import os
 import sys
-import json
 import time
 
-try:
-    import urandom
-except ImportError:                       # pragma: no cover - desktop fallback
-    import random as urandom
 
-try:
-    import network as _recovery_network
-except ImportError:
-    _recovery_network = None
-
-try:
-    import urequests as _recovery_urequests
-except ImportError:
-    _recovery_urequests = None
-
-
-class Recovery:
-    """Lightweight, dependency-free recovery utility. Rebuilds every
-    'core' package listed in pkgtable.json directly from GitHub."""
-
-    PKGTABLE_URL = "https://raw.githubusercontent.com/FerrariForever95/Zeno-Micro-PC/main/pkgtable.json"
-    PKGLIST_PATH = "/pkglist.json"
-    ZENO_PATH    = "/bin/zeno.py"
-
-    ZENO_TEMPLATE = """import urandom,time
-
-ui=None
-tsk=None
-log=None
-net=None
-usr=None
-fm=None
-
-boot_cap=urandom.getrandbits(32)
-
-wallpaper=f""
-
-boot_time=None
-
-authorized=False
-
-password="{password}"
-
-user="{user}"
-
-gitsecret="{gitsecret}"
-
-ssid="{ssid}"
-
-wifi_password="{wifi_password}"
-"""
-
-    def __init__(self):
-        self._creds = {}          # kept only in RAM until recovery completes
-        self._pkgtable = None
-        self._results = {"installed": [], "updated_flagged": [], "failed": []}
-        self.zeno_regenerated = False   # True only if run() wrote a brand-new zeno.py
-
-    def help(self):
-        print("  recover               Rebuild core OS components from pkgtable.json")
-        print("                        Works even if Services/PackageManager/Git/")
-        print("                        Network/zeno.py are missing or corrupted.")
-
-    # =============================================
-    # entry point
-    # =============================================
-    def run(self):
-        print("\n=== Zeno OS Recovery ===")
-        print("Rebuilding core OS components from pkgtable.json.\n")
-
-        zeno_existed = self._file_exists(self.ZENO_PATH)
-
-        if zeno_existed:
-            print("[recover] Found existing zeno.py -- using its stored Wi-Fi credentials.")
-            ssid, password = self._read_zeno_wifi()
-            if not ssid:
-                print("[recover] Could not read usable Wi-Fi credentials from zeno.py.")
-                ssid, password = self._prompt_wifi_only()
-        else:
-            print("[recover] zeno.py not found -- collecting setup details.")
-            self._creds = self._prompt_all()
-            ssid = self._creds.get("ssid")
-            password = self._creds.get("wifi_password")
-
-        if not self._connect_wifi(ssid, password):
-            print("[recover] Could not establish Wi-Fi connection. Aborting recovery.")
-            return False
-
-        self._pkgtable = self._download_pkgtable()
-        if self._pkgtable is None:
-            print("[recover] Could not download/parse pkgtable.json. Aborting recovery.")
-            return False
-
-        core_pkgs = [n for n, e in self._pkgtable.items() if e.get("core", False)]
-        if not core_pkgs:
-            print("[recover] No packages flagged core:true were found in pkgtable.json.")
-        else:
-            print("[recover] Core packages to restore: {}".format(", ".join(core_pkgs)))
-
-        installed = self._load_pkglist()
-        seen = set()
-        for name in core_pkgs:
-            self._restore_package(name, installed, seen)
-
-        self._save_pkglist(installed)
-
-        print("\n[recover] Recovery summary:")
-        print("  Restored/repaired  : {}".format(", ".join(self._results["installed"]) or "none"))
-        print("  Flagged for update : {}".format(", ".join(self._results["updated_flagged"]) or "none"))
-        print("  Failed             : {}".format(", ".join(self._results["failed"]) or "none"))
-
-        if not zeno_existed:
-            if self._results["failed"]:
-                print("[recover] Skipping zeno.py generation -- one or more core packages failed.")
-            else:
-                self._write_zeno_py(self._creds)
-                self.zeno_regenerated = True
-                print("[recover] Generated new zeno.py.")
-            # credentials only ever lived in self._creds / locals -- drop them now
-            self._creds = {}
-
-        print("=== Recovery complete ===\n")
-        return not self._results["failed"]
-
-    # =============================================
-    # prompts (only used when zeno.py is missing)
-    # =============================================
-    def _prompt_all(self):
-        creds = {}
-        creds["user"] = input("Username: ").strip()
-        creds["password"] = input("Password: ").strip()
-        creds["ssid"] = input("Wi-Fi SSID: ").strip()
-        creds["wifi_password"] = input("Wi-Fi Password: ").strip()
-        creds["gitsecret"] = input("Git Personal Access Token (optional, Enter to skip): ").strip()
-        return creds
-
-    def _prompt_wifi_only(self):
-        ssid = input("Wi-Fi SSID: ").strip()
-        password = input("Wi-Fi Password: ").strip()
-        return ssid, password
-
-    # =============================================
-    # zeno.py handling -- read-only, never imports it (it may be broken)
-    # =============================================
-    def _file_exists(self, path):
-        try:
-            os.stat(path)
-            return True
-        except OSError:
-            return False
-
-    def _read_zeno_wifi(self):
-        try:
-            with open(self.ZENO_PATH) as f:
-                text = f.read()
-        except OSError:
-            return None, None
-
-        ssid = self._extract_assignment(text, "ssid")
-        password = self._extract_assignment(text, "wifi_password")
-        return ssid, password
-
-    def _extract_assignment(self, text, var_name):
-        for line in text.splitlines():
-            line = line.strip()
-            if line.startswith(var_name + "=") or line.startswith(var_name + " ="):
-                _, _, rhs = line.partition("=")
-                rhs = rhs.strip()
-                if len(rhs) >= 2 and rhs[0] == rhs[-1] and rhs[0] in ("'", '"'):
-                    return rhs[1:-1]
-                return rhs or None
-        return None
-
-    def _write_zeno_py(self, creds):
-        content = self.ZENO_TEMPLATE.format(
-            password=creds.get("password", ""),
-            user=creds.get("user", ""),
-            gitsecret=creds.get("gitsecret", ""),
-            ssid=creds.get("ssid", ""),
-            wifi_password=creds.get("wifi_password", ""),
-        )
-        with open(self.ZENO_PATH, "w") as f:
-            f.write(content)
-
-    # =============================================
-    # Wi-Fi -- connects directly via the 'network' module, never via
-    # the Network service
-    # =============================================
-    def _connect_wifi(self, ssid, password):
-        if not ssid:
-            print("[recover] No SSID available to connect with.")
-            return False
-        if _recovery_network is None:
-            print("[recover] 'network' module unavailable on this platform -- "
-                  "assuming an existing/wired connection and continuing.")
-            return True
-        try:
-            wlan = _recovery_network.WLAN(_recovery_network.STA_IF)
-            wlan.active(True)
-            if wlan.isconnected():
-                return True
-            wlan.connect(ssid, password)
-            for _ in range(20):
-                if wlan.isconnected():
-                    print("[recover] Wi-Fi connected.")
-                    return True
-                time.sleep(0.5)
-            print("[recover] Wi-Fi connection timed out.")
-            return False
-        except Exception as e:
-            print("[recover] Wi-Fi error: {}".format(e))
-            return False
-
-    # =============================================
-    # HTTP / pkgtable
-    # =============================================
-    def _download_pkgtable(self):
-        raw = self._http_get_text(self.PKGTABLE_URL)
-        if raw is None:
-            return None
-        try:
-            return json.loads(raw)
-        except ValueError as e:
-            print("[recover] pkgtable.json is not valid JSON: {}".format(e))
-            return None
-
-    def _http_get_text(self, url):
-        if _recovery_urequests is None:
-            print("[recover] 'urequests' module unavailable -- cannot download {}".format(url))
-            return None
-        try:
-            resp = _recovery_urequests.get(url)
-            try:
-                if resp.status_code != 200:
-                    print("[recover] HTTP {} fetching {}".format(resp.status_code, url))
-                    return None
-                return resp.text
-            finally:
-                resp.close()
-        except Exception as e:
-            print("[recover] Download failed for {}: {}".format(url, e))
-            return None
-
-    def _raw_url(self, author, repo, branch, file_path):
-        return "https://raw.githubusercontent.com/{}/{}/{}/{}".format(
-            author, repo, branch or "main", file_path)
-
-    # =============================================
-    # filesystem helpers -- raw os/open only, mkdir -p style
-    # =============================================
-    def _mkdirs(self, path):
-        parts = [p for p in path.split("/") if p]
-        cur = ""
-        for p in parts:
-            cur += "/" + p
-            try:
-                os.mkdir(cur)
-            except OSError:
-                pass  # already exists
-
-    def _full_path(self, install_path, filename):
-        return "{}/{}".format((install_path or "/").rstrip("/"), filename)
-
-    def _write_and_verify(self, path, data):
-        directory = path.rsplit("/", 1)[0] or "/"
-        self._mkdirs(directory)
-        try:
-            with open(path, "w") as f:
-                f.write(data)
-        except OSError as e:
-            print("[recover] Could not write '{}': {}".format(path, e))
-            return False
-
-        try:
-            written_size = os.stat(path)[6]
-        except OSError:
-            print("[recover] Verification failed: '{}' missing after write.".format(path))
-            return False
-
-        if written_size != len(data):
-            print("[recover] Verification failed: size mismatch writing '{}'.".format(path))
-            return False
-        return True
-
-    def _file_is_healthy(self, path):
-        try:
-            return os.stat(path)[6] > 0
-        except OSError:
-            return False
-
-    # =============================================
-    # pkglist.json (read/write directly -- no PackageManager/FileManager)
-    # =============================================
-    def _load_pkglist(self):
-        try:
-            with open(self.PKGLIST_PATH) as f:
-                data = json.load(f)
-            return data if isinstance(data, dict) else {}
-        except (OSError, ValueError):
-            return {}
-
-    def _save_pkglist(self, data):
-        try:
-            with open(self.PKGLIST_PATH, "w") as f:
-                json.dump(data, f)
-        except OSError as e:
-            print("[recover] Could not write pkglist.json: {}".format(e))
-
-    # =============================================
-    # per-package restore, with dependency resolution
-    # =============================================
-    def _restore_package(self, name, installed, seen, chain=None):
-        if name in seen:
-            return name not in self._results["failed"]
-        seen.add(name)
-        chain = chain or []
-        if name in chain:
-            print("[recover] Dependency cycle detected involving '{}' -- skipping.".format(name))
-            self._results["failed"].append(name)
-            return False
-        chain = chain + [name]
-
-        entry = self._pkgtable.get(name)
-        if entry is None:
-            print("[recover] '{}' not found in pkgtable.json -- skipping.".format(name))
-            self._results["failed"].append(name)
-            return False
-
-        try:
-            for dep in entry.get("dependencies", []):
-                dep_name = dep.get("name") if isinstance(dep, dict) else dep
-                if not dep_name:
-                    continue
-                if not self._restore_package(dep_name, installed, seen, chain):
-                    print("[recover] Dependency '{}' failed -- cannot restore '{}'.".format(dep_name, name))
-                    self._results["failed"].append(name)
-                    return False
-
-            filename = entry.get("file", "").split("/")[-1]
-            target_path = self._full_path(entry.get("install_path"), filename)
-            record = installed.get(name)
-
-            if record:
-                existing_path = self._full_path(record.get("install_path"), record.get("filename"))
-                healthy = self._file_is_healthy(existing_path)
-                same_version = record.get("version") == entry.get("version")
-
-                if healthy and same_version:
-                    return True  # already good, nothing to do
-
-                if healthy and not same_version:
-                    # present and readable, just out of date -- don't
-                    # clobber it, just flag it for a normal update later
-                    record["update needed"] = True
-                    self._results["updated_flagged"].append(name)
-                    return True
-                # else: missing or corrupted -- fall through and repair it
-
-            data = self._http_get_text(self._raw_url(
-                entry.get("author"), entry.get("repository"), entry.get("branch"), entry.get("file")))
-            if data is None:
-                self._results["failed"].append(name)
-                return False
-
-            if not self._write_and_verify(target_path, data):
-                self._results["failed"].append(name)
-                return False
-
-            installed[name] = {
-                "name": entry.get("name", name),
-                "version": entry.get("version"),
-                "author": entry.get("author"),
-                "repository": entry.get("repository"),
-                "branch": entry.get("branch") or "main",
-                "install_path": entry.get("install_path"),
-                "filename": filename,
-                "dependencies": entry.get("dependencies", []),
-                "core": bool(entry.get("core", False)),
-            }
-            self._results["installed"].append(name)
-            print("[recover] Restored '{}' v{}.".format(name, entry.get("version")))
-            return True
-
-        except Exception as e:
-            print("[recover] Unexpected error restoring '{}': {}".format(name, e))
-            self._results["failed"].append(name)
-            return False
-
-
-# =================================================
-# SERVICE LOADING  (must never prevent ZenCMD from booting)
-# =================================================
-# ZenCMD has to be able to boot -- and always offer 'recover' -- even if
-# /Services is missing entirely, or any single class inside it is missing
-# or broken. This is wrapped in a function (rather than run once at
-# import time) so the exact same loading logic can be re-run right after
-# a successful 'recover': once Recovery has repaired the files on disk,
-# ZenCMD re-imports them and drops back into a normal, non-degraded boot
-# state without needing an actual device reboot.
-
-class _NullLogger:
-    def debug(self, msg, source=None):
-        pass
-
-    def warning(self, msg, source=None):
-        print("[WARN] {}".format(msg))
-
-    def error(self, msg, source=None):
-        print("[ERROR] {}".format(msg))
-
-
-class _FallbackZeno:
-    user = "recovery"
-    hostname = "zeno-device"
-
-
-def _fresh_import(name):
-    """Import (or re-import) a top-level module, dropping any cached
-    copy first so files that 'recover' just rewrote are actually picked
-    up instead of stale bytecode already sitting in sys.modules."""
-    for mod_name in [k for k in list(sys.modules.keys()) if k == name or k.startswith(name + ".")]:
-        try:
-            del sys.modules[mod_name]
-        except Exception:
-            pass
-    return __import__(name)
-
-
-def _load_services():
-    """(Re)load /Services and zeno.py and rebuild every piece of shell
-    state that depends on them. Returns True if Services loaded cleanly."""
-    global Services, Network, Disk, downloadhelper, system, Logger, Git
-    global BluetoothManager, BootConfig, usermanager, FileManager, PackageManager
-    global zeno, logger, _um, _fm, _pm, MODULES
-
-    try:
-        Services = _fresh_import("Services")
-    except Exception as e:
-        Services = None
-        print("[ZenCMD] Warning: /Services unavailable ({}). Running in degraded/recovery mode.".format(e))
-
-    def _svc(name):
-        return getattr(Services, name, None) if Services is not None else None
-
-    Disk             = _svc("Disk")
-    downloadhelper   = _svc("downloadhelper")
-    system           = _svc("system")
-    Logger           = _svc("Logger")
-    Git              = _svc("Git")
-    BluetoothManager = _svc("BluetoothManager")
-    BootConfig       = _svc("BootConfig")
-    usermanager      = _svc("usermanager")
-    FileManager      = _svc("FileManager")
-    PackageManager   = _svc("PackageManager")
-    Scheduler        = _svc("Scheduler")
-    IoTManager       = _svc("IoTManager")
-    _WifiManagerCls  = _svc("WifiManager")
-
-    try:
-        zeno = _fresh_import("zeno")
-    except Exception as e:
-        print("[ZenCMD] Warning: zeno.py unavailable ({}). Run 'recover' to rebuild it.".format(e))
-        zeno = _FallbackZeno()
-
-    logger = Logger() if Logger else _NullLogger()
-    _um = usermanager() if usermanager else None
-    _fm = FileManager() if FileManager else None   # <-- ALL filesystem access goes through here when available
-    _pm = PackageManager() if PackageManager else None
-
-    # WifiManager (Services' replacement for the old "Network" class)
-    # requires a Logger instance -- MODULES[name]() below always calls
-    # its entry with zero args, so we can't register the class itself.
-    # Wrap it in a zero-arg factory that closes over the logger we just
-    # built, matching how every other MODULES entry gets instantiated.
-    if _WifiManagerCls is not None:
-        Network = lambda: _WifiManagerCls(logger)
-    else:
-        Network = None
-
-    # NOTE: "encrypter": ZenZip was removed -- ZenZip is never imported
-    # anywhere in Services, so leaving it wired in here would crash ZenCMD
-    # at import time with NameError the moment MODULES is built. Re-add it
-    # once a real ZenZip implementation exists and is imported above.
-    #
-    # Only services that actually loaded are registered -- if Services is
-    # missing or partially broken, "enter <module>" / "pkg install ..."
-    # just reports "No such module" instead of crashing ZenCMD.
-    all_modules = {
-        "net":          Network,
-        "disk":         Disk,
-        "downserv":     downloadhelper,
-        "system":       system,
-        "log":          Logger,
-        "git":          Git,
-        "bootmgr":      BootConfig,
-        "bluetoothmgr": BluetoothManager,
-        "pkg":          PackageManager,
-        "ps":           Scheduler,
-        "iot":          IoTManager
-    }
-    MODULES = {k: v for k, v in all_modules.items() if v is not None}
-
-    return Services is not None
-
-
-# initial boot load
-_load_services()
-
-# =================================================
-# VERSION
-# =================================================
-ZENCMD_VERSION = "3.81"
-ZENOS_NAME     = "Zeno OS"
-
-# Commands that require Super Mode.
-# Checked as prefix-match so "bootmgr <anything>" is caught.
-# NOTE: this list is matched against the *bare command word* (either a
-# top-level builtin, or the method name called on a module), so it also
-# gates package-manager methods -- "install", "uninstall", "reinstall"
-# and "update" all require Super Mode whether typed as "pkg install foo",
-# as a one-shot module call, or from inside "enter pkg".
-#
-# 'recover' is deliberately NOT in this list: it must remain usable even
-# when usermanager/Super Mode itself is unavailable (e.g. Services is gone).
-PRIVILEGED_PREFIXES = (
-    "bootmgr",
-    "mount",
-    "umount",
-    "unmount",
-    "format",
-    "mkfs",
-    "shutdown",
-    "reboot",
-    "factory",
-    "removeuser",
-    "elevate",
-    "delevate",
-    "service",
-    "reload",
-    "reloadmodule",
-    "kernel",
-    "driver",
-    "pkg",
-    "install",
-    "remove",
-    "uninstall",
-    "reinstall",
-    "update",
-    "mountzfs",
-    "bootlog",
-)
-
-# =================================================
-# STATE
-# =================================================
-current_path   = "/Home"
-active_module  = None        # str key
-module_instance = None       # live object
-
-history_log    = []          # command history
-aliases        = {}          # user-defined aliases
-env_vars       = {}          # shell environment
-jobs           = []          # background job stubs
-
-_PIPE_IN       = None        # list[str] of lines fed in from a "|" pipeline, else None
-
-# =================================================
-# PRIVILEGE HELPERS
-# =================================================
-
-def _is_super():
-    if _um is None:
-        return False
-    try:
-        return _um.isrooted(zeno.user)
-    except Exception:
-        return False
-
-
-def _require_super(cmd_word):
-    for prefix in PRIVILEGED_PREFIXES:
-        if cmd_word == prefix or cmd_word.startswith(prefix + " "):
-            if not _is_super():
-                print("Access denied. Command requires Super Mode. Use 'super' first.")
-                return True   # caller should skip
-    return False
-
-
-# =================================================
-# PROMPT
-# =================================================
-
-def _prompt():
-    d = current_path.rstrip("/") or ""
-    if d.startswith("/"):
-        d = d[1:]                   # strip leading slash for display
-
-    if _is_super():
-        path_part = f"root/{d}" if d else "root/"
-        return f"{path_part}#:$"
-    else:
-        path_part = f"{zeno.user}/{d}:$" if d else f"{zeno.user}/:$"
-        if active_module:
-            return f"{path_part}[{active_module}]> "
-        return f"{path_part}>"
-
-
-# =================================================
-# PATH HELPERS  (pure string helpers -- no I/O here; all real I/O goes
-# through FileManager, which does its own normalisation internally)
-# =================================================
+# =====================================================================
+# path helpers -- raw os only, no FileManager, no metadata tree
+# =====================================================================
 
 def _normalize_path(path):
-    """Collapse '.', '..' and repeated slashes into a clean absolute path.
-    This is what makes 'cd ..', 'cd ../foo', 'cat ../x.txt' etc. actually work --
-    previously paths were just string-concatenated and '..' was never resolved."""
     parts = []
-    for p in path.split("/"):
+    for p in (path or "").split("/"):
         if p in ("", "."):
             continue
         if p == "..":
@@ -633,1490 +52,490 @@ def _normalize_path(path):
     return "/" + "/".join(parts) if parts else "/"
 
 
-def _abs(path):
-    """Resolve a path to a normalized absolute path using current_path."""
-    if path.startswith("/"):
-        combined = path
-    else:
-        base = current_path if current_path.endswith("/") else current_path + "/"
-        combined = base + path
-    return _normalize_path(combined)
-
-
-def _pjoin(parent, name):
-    parent = parent.rstrip("/") or "/"
+def _join(parent, name):
+    parent = (parent or "/").rstrip("/") or "/"
     return name if parent == "/" else parent + "/" + name
 
 
-def human_size(size):
-    if size < 1024:
-        return f"{size} B"
-    if size < 1024 * 1024:
-        return f"{size / 1024:.2f} KB"
-    return f"{size / (1024 * 1024):.2f} MB"
+def _exists(path):
+    try:
+        os.stat(path)
+        return True
+    except OSError:
+        return False
 
 
 def _is_dir(path):
     try:
-        return _fm.metadata(path).get("type") == "directory"
-    except Exception:
+        return bool(os.stat(path)[0] & 0x4000)
+    except OSError:
         return False
 
 
-# =================================================
-# PROGRAM SEARCH / EXECUTION  (routed through FileManager so read/exec
-# permission is actually enforced, not just faked with a path guard)
-# =================================================
-
-def _fs_file(path):
-    """True if path exists and is a plain file (not a directory)."""
-    if not _fm.exists(path):
-        return False
+def _size(path):
     try:
-        return _fm.metadata(path).get("type") != "directory"
-    except Exception:
-        return False
+        st = os.stat(path)
+        return 0 if bool(st[0] & 0x4000) else (st[6] if len(st) > 6 else 0)
+    except OSError:
+        return 0
 
 
-def resolve_program(name, cwd):
-    targets = [name] if name.endswith(".py") else [name, name + ".py"]
+def _human_size(n):
+    if n < 1024:
+        return "{} B".format(n)
+    if n < 1024 * 1024:
+        return "{:.2f} KB".format(n / 1024)
+    return "{:.2f} MB".format(n / (1024 * 1024))
 
-    if name.startswith("/"):
-        for t in targets:
-            if _fs_file(t):
-                return t
+
+def _mkdirs(path):
+    """mkdir -p, raw os only."""
+    cur = ""
+    for p in [p for p in (path or "").split("/") if p]:
+        cur += "/" + p
+        if not _exists(cur):
+            try:
+                os.mkdir(cur)
+            except OSError:
+                pass
+
+
+def _rm_recursive(path):
+    if _is_dir(path):
+        for child in (_listdir_safe(path) or []):
+            _rm_recursive(_join(path, child))
+        try:
+            os.rmdir(path)
+        except OSError as e:
+            print("[rm] Could not remove directory '{}': {}".format(path, e))
+    else:
+        try:
+            os.remove(path)
+        except OSError as e:
+            print("[rm] Could not remove '{}': {}".format(path, e))
+
+
+def _listdir_safe(path):
+    try:
+        return os.listdir(path)
+    except OSError as e:
+        print("[ls] Cannot list '{}': {}".format(path, e))
         return None
 
-    for t in targets:
-        p = _pjoin(cwd, t)
-        if _fs_file(p):
-            return p
 
-    print("[SYSRUN] Searching filesystem...")
-    stack = ["/"]
-    seen  = set()
-    while stack:
-        base = stack.pop()
-        if base in seen:
-            continue
-        seen.add(base)
-        try:
-            entries = _fm.listdir(base, show_hidden=True)
-        except Exception:
-            continue
-        for e in entries:
-            full = _pjoin(base, e)
-            try:
-                is_dir = _fm.metadata(full).get("type") == "directory"
-            except Exception:
-                continue
-            if is_dir:
-                stack.append(full)
-            elif e in targets:
-                return full
-    return None
+# =====================================================================
+# lazy, optional subsystem access -- probed on demand, never at import
+# =====================================================================
 
-
-def run_python_file(path):
-    """Read (with permission enforcement) and exec a .py file."""
-    fd = _fm.open(path, "r")
+def _try_import_recovery():
     try:
-        code = _fm.read(fd)
-    finally:
-        _fm.close(fd)
-    exec(code, {"__name__": "__main__", "__file__": path})
+        from Recovery import Recovery
+        return Recovery
+    except ImportError as e:
+        print("[recover] Recovery module unavailable: {}".format(e))
+        return None
 
 
-# =================================================
-# DIRECTORY DISPLAY
-# =================================================
-
-def list_dir(path, long=False):
+def _try_import_services():
+    """Best-effort import of Services.py. Returns None (with a clear
+    message) instead of raising if it's missing or broken -- recovery
+    must keep working with Services entirely absent."""
     try:
-        entries = _fm.listdir(path, show_hidden=True)
+        for stale in [m for m in list(sys.modules.keys()) if m == "Services"]:
+            del sys.modules[stale]
+        import Services
+        return Services
     except Exception as e:
-        print("[ls] Cannot list:", e)
-        return
-
-    print(f"\n{path}")
-    print("-" * 40)
-    for f in entries:
-        full = _pjoin(path, f)
-        # hide protected root-level .py unless super (system files)
-        if path == "/" and (f.endswith(".py") or f.endswith(".mpy")) and not _is_super():
-            continue
-        if f in ["pkglist.json", "pkgtable.json"]:
-            continue
-        try:
-            meta = _fm.metadata(full)
-        except Exception:
-            meta = {"type": "unknown", "size": 0, "owner": "?"}
-        is_d = meta.get("type") == "directory"
-        if long:
-            sz     = human_size(meta.get("size", 0))
-            kind   = "<DIR> " if is_d else "      "
-            owner  = meta.get("owner", "?")
-            print(f"  {kind}{f:28} {sz:>10}  owner={owner}")
-        else:
-            tag = "/" if is_d else ""
-            print(f"  {f}{tag}")
-    print()
-
-
-def tree_dir(path, prefix=""):
-    try:
-        entries = _fm.listdir(path, show_hidden=True)
-    except Exception:
-        print(prefix + "[unreadable]")
-        return
-    for e in entries:
-        full = _pjoin(path, e)
-        if path == "/" and e.endswith(".py") and not _is_super():
-            continue
-        if _is_dir(full):
-            print(prefix + "|-- " + e + "/")
-            tree_dir(full, prefix + "|   ")
-        else:
-            print(prefix + "|-- " + e)
-
-
-# =================================================
-# ARGUMENT HELPERS
-# =================================================
-
-def convert_arg(arg):
-    try:
-        return float(arg) if "." in arg else int(arg)
-    except:
-        return arg
-
-
-def _is_intlike(s):
-    try:
-        int(s)
-        return True
-    except Exception:
-        return False
-
-
-def _split(cmd):
-    """Split a single command into tokens, respecting quoted strings.
-    Quote characters themselves are stripped (used for the final,
-    per-command argument split)."""
-    parts  = []
-    buf    = []
-    in_q   = False
-    q_char = None
-    for ch in cmd:
-        if in_q:
-            if ch == q_char:
-                in_q = False
-            else:
-                buf.append(ch)
-        elif ch in ('"', "'"):
-            in_q   = True
-            q_char = ch
-        elif ch == " ":
-            if buf:
-                parts.append("".join(buf))
-                buf = []
-        else:
-            buf.append(ch)
-    if buf:
-        parts.append("".join(buf))
-    return parts
-
-
-def _split_top(raw, delims):
-    """Split raw text on any character in `delims` (e.g. ';' or '|'),
-    but never inside quotes. Quote characters are PRESERVED here (unlike
-    _split) since each resulting segment is itself re-tokenized later."""
-    segments = []
-    buf    = []
-    in_q   = False
-    q_char = None
-    for ch in raw:
-        if in_q:
-            buf.append(ch)
-            if ch == q_char:
-                in_q = False
-        elif ch in ('"', "'"):
-            in_q   = True
-            q_char = ch
-            buf.append(ch)
-        elif ch in delims:
-            segments.append("".join(buf))
-            buf = []
-        else:
-            buf.append(ch)
-    segments.append("".join(buf))
-    return segments
-
-
-# =================================================
-# STDOUT CAPTURE  (backs the "|" pipeline -- lets one command's printed
-# output become the next command's piped-in lines)
-# =================================================
-
-class _OutputCapture:
-    def __init__(self):
-        self.lines = []
-        self._buf = ""
-
-    def write(self, s):
-        self._buf += s
-        while "\n" in self._buf:
-            line, self._buf = self._buf.split("\n", 1)
-            self.lines.append(line)
-
-    def flush(self):
-        pass
-
-
-def _read_lines(args, idx=0):
-    """Get a list of text lines for commands like cat/head/tail/search.
-    Priority: an explicit file argument at args[idx], otherwise whatever
-    came in through a '|' pipe. Returns None if neither is available."""
-    if len(args) > idx:
-        p = _abs(args[idx])
-        try:
-            fd = _fm.open(p, "r")
-            try:
-                data = _fm.read(fd)
-            finally:
-                _fm.close(fd)
-            return data.splitlines()
-        except Exception as e:
-            print("[read]", e)
-            return None
-    if _PIPE_IN is not None:
-        return _PIPE_IN
-    return None
-
-
-# =================================================
-# BUILT-IN COMMAND HELP STRINGS
-# =================================================
-BUILTIN_HELP = {
-    "pwd":         "pwd                   Print working directory",
-    "cd":          "cd <path>             Change directory (supports .. and .)",
-    "ls":          "ls [-l]               List directory contents",
-    "dir":         "dir                   Alias for ls",
-    "tree":        "tree [path]           Show directory tree",
-    "mkdir":       "mkdir <dir>           Create directory",
-    "rmdir":       "rmdir <dir>           Remove empty directory",
-    "rm":          "rm <path>             Remove file",
-    "cp":          "cp <src> <dst>        Copy file",
-    "mv":          "mv <src> <dst>        Move/rename file",
-    "touch":       "touch <file>          Create empty file",
-    "cat":         "cat <file>            Print file contents (or piped input)",
-    "head":        "head <file> [n]       Print first n lines (default 10; or piped input)",
-    "tail":        "tail <file> [n]       Print last n lines (default 10; or piped input)",
-    "search":      "search <pat> [file]   Grep-like search (alias: grep; supports piped input)",
-    "echo":        "echo <text>           Print text",
-    "clear":       "clear                 Clear terminal  (cls alias)",
-    "cls":         "cls                   Alias for clear",
-    "history":     "history               Show command history",
-    "which":       "which <cmd>           Find command location",
-    "whereis":     "whereis <name>        Locate binary on filesystem",
-    "find":        "find <path> <name>    Search for files",
-    "stat":        "stat <path>           File status information",
-    "file":        "file <path>           Describe file type",
-    "whoami":      "whoami                Show current user",
-    "id":          "id                    Show user identity",
-    "hostname":    "hostname              Show device hostname",
-    "date":        "date                  Show current date",
-    "time":        "time                  Show current time",
-    "uptime":      "uptime                Show system uptime",
-    "version":     "version               Show ZenCMD and OS version",
-    "df":          "df                    Disk free (filesystem usage)",
-    "du":          "du <path>             Disk usage of path",
-    "free":        "free                  Show free memory",
-    "memdebug":    "memdebug              Detailed memory debug",
-    "ps":          "ps                    Show running processes",
-    "kill":        "kill <pid>            Kill process by ID",
-    "jobs":        "jobs                  List background jobs",
-    "env":         "env                   Show environment variables",
-    "export":      "export KEY=VALUE      Set environment variable",
-    "alias":       "alias [name=cmd]      Define or list aliases",
-    "unalias":     "unalias <name>        Remove alias",
-    "mount":       "mount [src dst]       Mount filesystem  (SUPER)",
-    "mountzfs":    "mountzfs              Mount ZFS volume  (SUPER)",
-    "sync":        "sync                  Sync filesystem buffers",
-    "bootlog":     "bootlog               Show boot log  (SUPER)",
-    "log":         "log                   Show ZenCMD log",
-    "service":     "service <name> <op>   Manage services  (SUPER)",
-    "services":    "services              List all services",
-    "reload":      "reload                Reload ZenCMD config  (SUPER)",
-    "reloadmodule":"reloadmodule <mod>    Reload a module  (SUPER)",
-    "shutdown":    "shutdown              Power off device  (SUPER)",
-    "reboot":      "reboot                Reboot device  (SUPER)",
-    "factory":     "factory               Factory reset  (SUPER)",
-    "super":       "super                 Elevate to Super Mode",
-    "unsuper":     "unsuper               Exit Super Mode",
-    "passwd":      "passwd                Change your account password",
-    "chusername":  "chusername            Change your account username",
-    "userdebug":   "userdebug             Show current user debug",
-    "whoisroot":   "whoisroot             Check if current user is rooted",
-    "modules":     "modules               List available modules",
-    "enter":       "enter <module>        Enter module context",
-    "leave":       "leave                 Leave current module",
-    "sysrun":      "sysrun <file>         Run a .py file or open a file",
-    "pkgrun":      "pkgrun <pkg> [args]   Run an installed package",
-    "recover":     "recover               Rebuild core OS from pkgtable.json (always works)",
-    "help":        "help [cmd|module]     Show help",
-    "exit":        "exit / quit           Exit module or ZenCMD",
-    "quit":        "quit                  Alias for exit",
-}
-
-
-def _shell_help():
-    print(f"\nZenCMD {ZENCMD_VERSION} — {ZENOS_NAME}")
-    print("=" * 48)
-    print("Navigation")
-    for k in ("pwd", "cd", "ls", "tree", "mkdir", "rmdir", "rm", "cp", "mv", "touch"):
-        print(" ", BUILTIN_HELP[k])
-    print("\nFile Operations")
-    for k in ("cat", "head", "tail", "search", "echo", "stat", "file", "find", "which", "whereis"):
-        print(" ", BUILTIN_HELP[k])
-    print("\nSystem")
-    for k in ("whoami", "id", "hostname", "date", "time", "uptime", "version",
-              "df", "du", "free", "memdebug", "ps", "kill", "jobs", "sync"):
-        print(" ", BUILTIN_HELP[k])
-    print("\nEnvironment")
-    for k in ("env", "export", "alias", "unalias", "history", "clear"):
-        print(" ", BUILTIN_HELP[k])
-    print("\nZeno-specific")
-    for k in ("super", "unsuper", "passwd", "chusername", "userdebug", "whoisroot", "modules",
-              "enter", "leave", "sysrun", "pkgrun", "service", "services",
-              "reload", "reloadmodule", "mountzfs", "bootlog", "log",
-              "shutdown", "reboot", "factory"):
-        print(" ", BUILTIN_HELP[k])
-    print("\nRecovery (always available, even with a broken /Services)")
-    print(" ", BUILTIN_HELP["recover"])
-    print("\nPackages: 'enter pkg' or 'pkg <install|uninstall|reinstall|update|")
-    print("info|list|verify|run> ...'. install/uninstall/reinstall/update")
-    print("require Super Mode. Use 'pkgrun <pkg> [args]' to run one directly.")
-    print("\nChaining: use ';' to run commands one after another")
-    print("  e.g.  clear ; ls")
-    print("and '|' to pipe one command's output into the next")
-    print("  e.g.  cat /LOGS/systemlog.txt | search ERROR")
-    print("  e.g.  ls -l | search .py")
-    print("\nType 'help <command>' for details, or '<module> help' for module help.")
-    print()
-
-
-# =================================================
-# SUPER MODE
-# =================================================
-
-def _cmd_super():
-    if _is_super():
-        print("Already in Super Mode.")
-        return
-    if _um is None:
-        print("Super Mode is unavailable (usermanager service is missing). "
-              "Recovery-critical commands like 'recover' don't need it.")
-        return
-    try:
-        pwd = input(f"Enter password for {zeno.user}: ")
-    except KeyboardInterrupt:
-        print()
-        return
-    _um.elevate(zeno.user, pwd)
-    if _is_super():
-        logger.debug(f"Super Mode entered by {zeno.user}", source="ZenCMD")
-        print("Entering Super Mode...")
-    else:
-        logger.warning(f"Failed Super Mode attempt by {zeno.user}", source="ZenCMD")
-        print("Authentication failed.")
-
-
-def _cmd_unsuper():
-    if not _is_super():
-        print("Not in Super Mode.")
-        return
-    try:
-        pwd = input(f"Confirm password for {zeno.user}: ")
-    except KeyboardInterrupt:
-        print()
-        return
-    _um.delevate(zeno.user, pwd)
-    if not _is_super():
-        logger.debug(f"Super Mode exited by {zeno.user}", source="ZenCMD")
-        print("Exited Super Mode.")
-    else:
-        print("Authentication failed. Remaining in Super Mode.")
-
-def _cmd_passwd():
-    if _um is None:
-        print("Password change is unavailable (usermanager service is missing).")
-        return
-    try:
-        old_pwd = input(f"Current password for {zeno.user}: ")
-        new_pwd = input("New password: ")
-        confirm_pwd = input("Confirm new password: ")
-    except KeyboardInterrupt:
-        print()
-        return
-    if new_pwd != confirm_pwd:
-        print("New passwords do not match. Aborted.")
-        return
-    if not new_pwd:
-        print("Password cannot be empty. Aborted.")
-        return
-    ok = _um.change_password(zeno.user, old_pwd, new_pwd)
-    if ok:
-        logger.debug(f"Password changed for {zeno.user}", source="ZenCMD")
-    else:
-        logger.warning(f"Failed password-change attempt by {zeno.user}", source="ZenCMD")
-
-
-def _cmd_chusername():
-    if _um is None:
-        print("Username change is unavailable (usermanager service is missing).")
-        return
-    try:
-        pwd = input(f"Current password for {zeno.user}: ")
-        new_user = input("New username: ").strip()
-    except KeyboardInterrupt:
-        print()
-        return
-    if not new_user:
-        print("Username cannot be empty. Aborted.")
-        return
-    ok = _um.change_username(zeno.user, pwd, new_user)
-    if ok:
-        print("Note: zeno.py still declares the old username -- update the "
-              "'user' field in zeno.py too, or this change will be reverted "
-              "automatically the next time the account record is read.")
-        logger.debug(f"Username change requested: {zeno.user} -> {new_user}", source="ZenCMD")
-    else:
-        logger.warning(f"Failed username-change attempt by {zeno.user}", source="ZenCMD")
-
-# =================================================
-# BUILT-IN IMPLEMENTATIONS  (filesystem ones all go through _fm)
-# =================================================
-
-def _cmd_ls(args):
-    long  = "-l" in args
-    paths = [a for a in args if not a.startswith("-")]
-    path  = _abs(paths[0]) if paths else current_path
-    list_dir(path, long=long)
-
-
-def _cmd_cd(args):
-    global current_path
-    if not args:
-        current_path = "/"
-        return
-    target = _abs(args[0])
-    if not _fm.exists(target) or not _is_dir(target):
-        print(f"[cd] Not a directory: {target}")
-        return
-    current_path = target
-
-
-def _cmd_mkdir(args):
-    if not args:
-        print("Usage: mkdir <dir>")
-        return
-    for d in args:
-        try:
-            _fm.mkdir(_abs(d))
-            print("Created:", d)
-        except Exception as e:
-            print("[mkdir]", e)
-
-
-def _cmd_rmdir(args):
-    if not args:
-        print("Usage: rmdir <dir>")
-        return
-    p = _abs(args[0])
-    try:
-        if not _is_dir(p):
-            print(f"[rmdir] Not a directory: {p}")
-            return
-        if _fm.listdir(p, show_hidden=True):
-            print(f"[rmdir] Directory not empty: {p}")
-            return
-        _fm.delete(p)
-        print("Removed:", p)
-    except Exception as e:
-        print("[rmdir]", e)
-
-
-def _cmd_rm(args):
-    if not args:
-        print("Usage: rm <file>")
-        return
-    p = _abs(args[0])
-    try:
-        if _is_dir(p):
-            print(f"[rm] Is a directory (use rmdir): {p}")
-            return
-        _fm.delete(p)
-        print("Removed:", p)
-    except Exception as e:
-        print("[rm]", e)
-
-
-def _cmd_cp(args):
-    if len(args) < 2:
-        print("Usage: cp <src> <dst>")
-        return
-    src, dst = _abs(args[0]), _abs(args[1])
-    try:
-        _fm.copy(src, dst)
-        print(f"Copied {src} -> {dst}")
-    except Exception as e:
-        print("[cp]", e)
-
-
-def _cmd_mv(args):
-    if len(args) < 2:
-        print("Usage: mv <src> <dst>")
-        return
-    src, dst = _abs(args[0]), _abs(args[1])
-    try:
-        _fm.move(src, dst)
-        print(f"Moved {src} -> {dst}")
-    except Exception as e:
-        print("[mv]", e)
-
-
-def _cmd_touch(args):
-    if not args:
-        print("Usage: touch <file>")
-        return
-    p = _abs(args[0])
-    try:
-        if _fm.exists(p):
-            fd = _fm.open(p, "a")
-            _fm.close(fd)
-        else:
-            _fm.create(p, "")
-        print("Touched:", p)
-    except Exception as e:
-        print("[touch]", e)
-
-
-def _cmd_cat(args):
-    lines = _read_lines(args, 0)
-    if lines is None:
-        print("Usage: cat <file>  (or pipe input, e.g. ls | cat)")
-        return
-    print("\n".join(lines))
-
-
-def _cmd_head(args):
-    n = 10
-    file_args = args
-    if _PIPE_IN is not None and (not args or _is_intlike(args[0])):
-        if args:
-            n = int(args[0])
-        file_args = []
-    elif len(args) > 1:
-        n = int(args[1])
-        file_args = args[:1]
-    else:
-        file_args = args[:1]
-
-    lines = _read_lines(file_args, 0)
-    if lines is None:
-        print("Usage: head <file> [n]  (or pipe input)")
-        return
-    for line in lines[:n]:
-        print(line)
-
-
-def _cmd_tail(args):
-    n = 10
-    file_args = args
-    if _PIPE_IN is not None and (not args or _is_intlike(args[0])):
-        if args:
-            n = int(args[0])
-        file_args = []
-    elif len(args) > 1:
-        n = int(args[1])
-        file_args = args[:1]
-    else:
-        file_args = args[:1]
-
-    lines = _read_lines(file_args, 0)
-    if lines is None:
-        print("Usage: tail <file> [n]  (or pipe input)")
-        return
-    for line in lines[-n:]:
-        print(line)
-
-
-def _cmd_search(args):
-    """grep-like: search <pattern> [file] -- reads from file if given,
-    otherwise from piped input (e.g. cat log.txt | search ERROR)."""
-    if not args:
-        print("Usage: search <pattern> [file]  (or pipe input, e.g. cat file | search foo)")
-        return
-    pattern = args[0]
-    lines = _read_lines(args, 1)
-    if lines is None:
-        print("Usage: search <pattern> [file]  (or pipe input)")
-        return
-    matched = 0
-    for line in lines:
-        if pattern in line:
-            print(line)
-            matched += 1
-    if matched == 0:
-        print("[search] no matches")
-
-
-def _cmd_stat(args):
-    if not args:
-        print("Usage: stat <path>")
-        return
-    p = _abs(args[0])
-    try:
-        meta = _fm.metadata(p)
-    except Exception as e:
-        print("[stat] Not found:", p)
-        return
-    print(f"  Path       : {p}")
-    print(f"  Type       : {meta.get('type')}")
-    print(f"  Size       : {human_size(meta.get('size', 0))}")
-    print(f"  Owner      : {meta.get('owner')}")
-    print(f"  Permission : {meta.get('permission')}")
-
-
-def _cmd_file(args):
-    if not args:
-        print("Usage: file <path>")
-        return
-    p = _abs(args[0])
-    try:
-        meta = _fm.metadata(p)
-    except Exception:
-        print(p + ": no such file")
-        return
-    print(p + ": " + meta.get("type", "unknown"))
-
-
-def _cmd_find(args):
-    if len(args) < 2:
-        print("Usage: find <path> <name>")
-        return
-    base  = _abs(args[0])
-    query = args[1]
-    stack = [base]
-    found = 0
-    while stack:
-        d = stack.pop()
-        try:
-            entries = _fm.listdir(d, show_hidden=True)
-        except Exception:
-            continue
-        for e in entries:
-            full = _pjoin(d, e)
-            if query in e:
-                print(full)
-                found += 1
-            if _is_dir(full):
-                stack.append(full)
-    if found == 0:
-        print("No matches.")
-
-
-def _cmd_which(args):
-    if not args:
-        print("Usage: which <cmd>")
-        return
-    name = args[0]
-    if name in BUILTIN_HELP:
-        print(f"{name}: ZenCMD built-in")
-        return
-    if name in MODULES:
-        print(f"{name}: ZenCMD module")
-        return
-    p = resolve_program(name, current_path)
-    if p:
-        print(p)
-    else:
-        print(f"{name}: not found")
-
-
-def _cmd_whereis(args):
-    _cmd_which(args)
-
-
-def _cmd_echo(args):
-    out = []
-    for a in args:
-        if a.startswith("$"):
-            out.append(str(env_vars.get(a[1:], "")))
-        else:
-            out.append(a)
-    print(" ".join(out))
-
-
-def _cmd_env(args):
-    for k, v in env_vars.items():
-        print(f"  {k}={v}")
-
-
-def _cmd_export(args):
-    if not args:
-        _cmd_env([])
-        return
-    for a in args:
-        if "=" in a:
-            k, v = a.split("=", 1)
-            env_vars[k.strip()] = v.strip()
-            print(f"Set {k}={v}")
-        else:
-            print(f"export: invalid: {a}")
-
-
-def _cmd_alias(args):
-    if not args:
-        for k, v in aliases.items():
-            print(f"  alias {k}='{v}'")
-        return
-    for a in args:
-        if "=" in a:
-            k, v = a.split("=", 1)
-            aliases[k.strip()] = v.strip()
-        else:
-            if a in aliases:
-                print(f"  alias {a}='{aliases[a]}'")
-            else:
-                print(f"alias: {a}: not found")
-
-
-def _cmd_unalias(args):
-    if not args:
-        print("Usage: unalias <name>")
-        return
-    for a in args:
-        if a in aliases:
-            del aliases[a]
-            print(f"Removed alias: {a}")
-        else:
-            print(f"unalias: {a}: not found")
-
-
-def _cmd_history(args):
-    for i, h in enumerate(history_log, 1):
-        print(f"  {i:4}  {h}")
-
-
-def _cmd_userdebug(args):
-    if _um is None:
-        print("  usermanager service unavailable.")
-        return
-    debug = _um.userdebug() if hasattr(_um, "userdebug") else _um.userinfo()
-    print(f"  User   : {debug.get('user', '?')}")
-    print(f"  Rooted : {debug.get('root', False)}")
-
-
-def _cmd_whoisroot(args):
-    if _um is None:
-        print("usermanager service unavailable.")
-        return
-    rooted = _um.isrooted(zeno.user)
-    if rooted:
-        print(f"{zeno.user} is in Super Mode (rooted).")
-    else:
-        print(f"{zeno.user} is not rooted.")
-
-
-def _cmd_whoami(args):
-    print("root" if _is_super() else zeno.user)
-
-
-def _cmd_id(args):
-    uid = 0 if _is_super() else 1000
-    print(f"uid={uid}({_cmd_whoami_str()}) gid={uid}")
-
-
-def _cmd_whoami_str():
-    return "root" if _is_super() else zeno.user
-
-
-def _cmd_hostname(args):
-    try:
-        import network
-        print(network.WLAN().config("hostname"))
-    except:
-        print(getattr(zeno, "hostname", "zeno-device"))
-
-
-def _cmd_version(args):
-    print(f"{ZENOS_NAME}")
-    print(f"ZenCMD {ZENCMD_VERSION}")
-    try:
-        import sys as _s
-        print(f"MicroPython {_s.version}")
-    except:
-        pass
-
-
-def _cmd_uptime(args):
-    try:
-        import time
-        t = time.ticks_ms() // 1000
-        h = t // 3600
-        m = (t % 3600) // 60
-        s = t % 60
-        print(f"Uptime: {h}h {m}m {s}s")
-    except Exception as e:
-        print("[uptime]", e)
-
-
-def _cmd_date(args):
-    try:
-        import utime
-        t = utime.localtime()
-        print(f"{t[0]}-{t[1]:02d}-{t[2]:02d}")
-    except Exception as e:
-        print("[date]", e)
-
-
-def _cmd_time_cmd(args):
-    try:
-        import utime
-        t = utime.localtime()
-        print(f"{t[3]:02d}:{t[4]:02d}:{t[5]:02d}")
-    except Exception as e:
-        print("[time]", e)
-
-
-def _cmd_df(args):
-    try:
-        import uos
-        st = uos.statvfs("/")
-        block_size  = st[0]
-        total       = st[2] * block_size
-        free        = st[3] * block_size
-        used        = total - free
-        print(f"  Total : {human_size(total)}")
-        print(f"  Used  : {human_size(used)}")
-        print(f"  Free  : {human_size(free)}")
-    except Exception as e:
-        print("[df]", e)
-
-
-def _cmd_du(args):
-    path = _abs(args[0]) if args else current_path
-    total = 0
-    stack = [path]
-    while stack:
-        d = stack.pop()
-        try:
-            entries = _fm.listdir(d, show_hidden=True)
-        except Exception:
-            continue
-        for e in entries:
-            full = _pjoin(d, e)
-            if _is_dir(full):
-                stack.append(full)
-            else:
-                try:
-                    total += _fm.metadata(full).get("size", 0)
-                except Exception:
-                    pass
-    print(f"  {human_size(total)}  {path}")
-
-
-def _cmd_free(args):
-    try:
-        import gc
-        gc.collect()
-        free  = gc.mem_free()
-        alloc = gc.mem_alloc()
-        total = free + alloc
-        print(f"  Total : {human_size(total)}")
-        print(f"  Used  : {human_size(alloc)}")
-        print(f"  Free  : {human_size(free)}")
-    except Exception as e:
-        print("[free]", e)
-
-
-def _cmd_memdebug(args):
-    _cmd_free(args)
-    try:
-        import micropython
-        micropython.mem_debug()
-    except:
-        pass
-
-
-def _cmd_ps(args):
-    print("  PID  NAME")
-    print("    1  zencmd (this shell)")
-    for i, j in enumerate(jobs, 2):
-        print(f"  {i:3}  {j}")
-
-
-def _cmd_kill(args):
-    if not args:
-        print("Usage: kill <pid>")
-        return
-    print(f"[kill] Signal sent to PID {args[0]} (stub)")
-
-
-def _cmd_jobs(args):
-    if not jobs:
-        print("No background jobs.")
-    for i, j in enumerate(jobs, 1):
-        print(f"  [{i}] {j}")
-
-
-def _cmd_sync(args):
-    try:
-        import uos
-        uos.sync()
-        print("Synced.")
-    except Exception as e:
-        print("[sync]", e)
-
-
-def _cmd_mount(args):
-    if len(args) < 2:
-        print("Usage: mount <src> <dst>")
-        return
-    print(f"[mount] Mounting {args[0]} -> {args[1]} (stub)")
-
-
-def _cmd_mountzfs(args):
-    try:
-        import zfs
-        zfs.mount()
-        print("ZFS mounted.")
-    except Exception as e:
-        print("[mountzfs]", e)
-
-
-def _cmd_bootlog(args):
-    p = "/bootlog.txt"
-    try:
-        fd = _fm.open(p, "r")
-        try:
-            print(_fm.read(fd))
-        finally:
-            _fm.close(fd)
-    except Exception:
-        print("[bootlog] No boot log found.")
-
-
-def _cmd_log(args):
-    p = "/log.txt"
-    try:
-        fd = _fm.open(p, "r")
-        try:
-            print(_fm.read(fd))
-        finally:
-            _fm.close(fd)
-    except Exception:
-        print("[log] No log file found.")
-
-
-def _cmd_services(args):
-    print("Services: (stub — integrate service manager)")
-
-
-def _cmd_service(args):
-    if len(args) < 2:
-        print("Usage: service <name> <start|stop|restart|status>")
-        return
-    print(f"[service] {args[0]} {args[1]} (stub)")
-
-
-def _cmd_reload(args):
-    print("[reload] Reloading ZenCMD config... (stub)")
-
-
-def _cmd_reloadmodule(args):
-    global module_instance
-    if not args:
-        print("Usage: reloadmodule <module>")
-        return
-    name = args[0].lower()
-    if name not in MODULES:
-        print("Unknown module:", name)
-        return
-    if active_module == name:
-        module_instance = MODULES[name]()
-        print(f"Reloaded module: {name}")
-    else:
-        print(f"Module {name} not active. Enter it first.")
-
-
-def _cmd_shutdown(args):
-    logger.debug("System shutdown requested", source="ZenCMD")
-    print("Shutting down...")
-    try:
-        import machine
-        machine.poweroff()
-    except:
-        print("[shutdown] machine.poweroff() not available.")
-
-
-def _cmd_reboot(args):
-    logger.debug("System reboot requested", source="ZenCMD")
-    print("Rebooting...")
-    try:
-        import machine
-        machine.reset()
-    except:
-        print("[reboot] machine.reset() not available.")
-
-
-def _cmd_factory(args):
-    logger.warning("Factory reset requested", source="ZenCMD")
-    confirm = input("This will erase all data. Type YES to confirm: ")
-    if confirm.strip() == "YES":
-        print("Factory reset initiated... (stub)")
-    else:
-        print("Cancelled.")
-
-
-def _cmd_modules(args):
-    print("\nAvailable modules:")
-    for k in MODULES:
-        print(f"  {k}")
-    print()
-
-
-def _cmd_sysrun(args):
-    if not args:
-        print("Usage: sysrun <file>")
-        return
-    name = args[0]
-    path = resolve_program(name, current_path)
-    if not path:
-        print(f"[sysrun] Not found: {name}")
-        return
-    if path.endswith(".py"):
-        print("[sysrun] Running", path)
-        try:
-            run_python_file(path)
-        except KeyboardInterrupt:
-            print("\n[sysrun] Interrupted")
-        except Exception as e:
-            print("[sysrun] Error:", e)
-    else:
-        try:
-            fd = _fm.open(path, "r")
-            try:
-                print(_fm.read(fd))
-            finally:
-                _fm.close(fd)
-        except Exception as e:
-            print("[sysrun] Cannot open:", e)
-
-
-def _cmd_pkgrun(args):
-    """pkgrun <package> [args...] -- run an installed package.
-    Does NOT require Super Mode; only install/uninstall/reinstall/update do.
-    """
-    if not args:
-        print("Usage: pkgrun <package> [args...]")
-        return
+        print("[pkg] Services.py unavailable ({}). 'pkg' needs Services to work; "
+              "try 'recover' first.".format(e))
+        return None
+
+
+def _try_get_package_manager():
+    Services = _try_import_services()
+    if Services is None:
+        return None
+    PackageManager = getattr(Services, "PackageManager", None)
     if PackageManager is None:
-        print("[pkgrun] PackageManager service is unavailable. Try 'recover' first.")
-        return
-    name     = args[0]
-    pkg_args = [convert_arg(a) for a in args[1:]]
-    pm = PackageManager()
-    pm.run(name, *pkg_args)
-
-
-def _cmd_recover(args):
-    """recover -- rebuild core OS components from pkgtable.json using the
-    standalone Recovery class above (no /Services dependency at all).
-    On success, re-imports Services/zeno.py and rebuilds every dependent
-    piece of ZenCMD state, so the shell drops back into a normal boot
-    without requiring an actual device reboot."""
+        print("[pkg] Services.py loaded, but has no PackageManager -- can't run 'pkg'.")
+        return None
     try:
-        rec = Recovery()
-        ok = rec.run()
-    except KeyboardInterrupt:
-        print("\n[recover] Interrupted.")
-        return
+        return PackageManager()
     except Exception as e:
-        print("[recover] Recovery failed:", e)
-        return
-
-    if not ok:
-        print("[recover] Recovery finished with failures -- core modules were not re-initialized.")
-        print("[recover] Run 'recover' again once the failures above are resolved.")
-        return
-
-    print("[recover] Re-importing core modules...")
-    if _load_services():
-        print("[recover] Core modules re-imported -- ZenCMD is back to a normal boot state.")
-        if rec.zeno_regenerated and usermanager is not None and _um is not None:
-            try:
-                token = getattr(Services, "_SYSTEM_TOKEN", None)
-                _um.rebuild(token)
-                print("[recover] userinfo.json rebuilt from the newly generated zeno.py.")
-            except Exception as e:
-                print("[recover] Warning: could not rebuild userinfo.json:", e)
-    else:
-        print("[recover] Recovery finished, but Services still failed to import. "
-              "A manual reboot may be required.")
-
-
-# =================================================
-# MODULE DISPATCH
-# =================================================
-
-def _enter_module(name):
-    global active_module, module_instance
-    cls = MODULES.get(name.lower())
-    if cls is None:
-        print(f"No such module: {name}")
-        return
-    module_instance = cls()
-    active_module   = name.lower()
-    logger.debug(f"Module entered: {active_module}", source="ZenCMD")
-    print(f">> {active_module}")
-
-
-def _leave_module():
-    global active_module, module_instance
-    if active_module:
-        logger.debug(f"Module exited: {active_module}", source="ZenCMD")
-        print(f"Left module: {active_module}")
-        active_module   = None
-        module_instance = None
-    else:
-        print("Not inside a module.")
-
-
-def _dispatch_module(instance, fn, args):
-    if hasattr(instance, fn):
-        r = getattr(instance, fn)(*args)
-        if r is not None:
-            print(r)
-    else:
-        print(f"No method: {fn}")
-
-
-# =================================================
-# COMMAND DISPATCH TABLE
-# =================================================
-BUILTINS = {
-    # Navigation
-    "pwd":          (lambda a: print(current_path),  False),
-    "cd":           (_cmd_cd,        False),
-    "ls":           (_cmd_ls,        False),
-    "dir":          (_cmd_ls,        False),
-    "tree":         (lambda a: (tree_dir(_abs(a[0]) if a else current_path) or print()), False),
-    "mkdir":        (_cmd_mkdir,     False),
-    "rmdir":        (_cmd_rmdir,     False),
-    "rm":           (_cmd_rm,        False),
-    "cp":           (_cmd_cp,        False),
-    "mv":           (_cmd_mv,        False),
-    "touch":        (_cmd_touch,     False),
-    # File content
-    "cat":          (_cmd_cat,       False),
-    "head":         (_cmd_head,      False),
-    "tail":         (_cmd_tail,      False),
-    "search":       (_cmd_search,    False),
-    "echo":         (_cmd_echo,      False),
-    "stat":         (_cmd_stat,      False),
-    "file":         (_cmd_file,      False),
-    "find":         (_cmd_find,      False),
-    "which":        (_cmd_which,     False),
-    "whereis":      (_cmd_whereis,   False),
-    # System debug
-    "whoami":       (lambda a: print(_cmd_whoami_str()), False),
-    "id":           (_cmd_id,        False),
-    "hostname":     (_cmd_hostname,  False),
-    "date":         (_cmd_date,      False),
-    "time":         (_cmd_time_cmd,  False),
-    "uptime":       (_cmd_uptime,    False),
-    "version":      (_cmd_version,   False),
-    "df":           (_cmd_df,        False),
-    "du":           (_cmd_du,        False),
-    "free":         (_cmd_free,      False),
-    "memdebug":     (_cmd_memdebug,  False),
-    "ps":           (_cmd_ps,        False),
-    "kill":         (_cmd_kill,      False),
-    "jobs":         (_cmd_jobs,      False),
-    # Environment
-    "env":          (_cmd_env,       False),
-    "export":       (_cmd_export,    False),
-    "alias":        (_cmd_alias,     False),
-    "unalias":      (_cmd_unalias,   False),
-    "history":      (_cmd_history,   False),
-    "clear":        (lambda a: print("\n" * 40), False),
-    "cls":          (lambda a: print("\n" * 40), False),
-    # User
-    "userdebug":    (_cmd_userdebug, False),
-    "whoisroot":    (_cmd_whoisroot, False),
-    # Modules
-    "modules":      (_cmd_modules,   False),
-    "sysrun":       (_cmd_sysrun,    False),
-    "pkgrun":       (_cmd_pkgrun,    False),
-    # Recovery -- always available, no Super Mode required
-    "recover":      (_cmd_recover,   False),
-    # Privileged
-    "mount":        (_cmd_mount,     True),
-    "mountzfs":     (_cmd_mountzfs,  True),
-    "sync":         (_cmd_sync,      False),
-    "bootlog":      (_cmd_bootlog,   True),
-    "log":          (_cmd_log,       False),
-    "service":      (_cmd_service,   True),
-    "services":     (_cmd_services,  False),
-    "reload":       (_cmd_reload,    True),
-    "reloadmodule": (_cmd_reloadmodule, True),
-    "shutdown":     (_cmd_shutdown,  True),
-    "reboot":       (_cmd_reboot,    True),
-    "factory":      (_cmd_factory,   True),
-}
-
-# Default aliases (user can override)
-aliases["ll"]   = "ls -l"
-aliases["cls"]  = "clear"
-aliases["q"]    = "exit"
-aliases["grep"] = "search"
-
-
-# =================================================
-# COMMAND PREPROCESSOR
-# =================================================
-
-def _preprocess(raw):
-    """Expand aliases, handle env-var substitutions."""
-    parts = _split(raw)
-    if not parts:
-        return raw
-    first = parts[0]
-    if first in aliases:
-        expansion = aliases[first]
-        rest      = raw[len(first):].lstrip()
-        return (expansion + " " + rest).strip() if rest else expansion
-    return raw
-
-
-# =================================================
-# SINGLE-COMMAND EXECUTION  (one command word + its args -- no ';' or '|')
-# =================================================
-
-def _execute(raw):
-    global current_path, active_module, module_instance
-
-    cmd = _preprocess(raw).strip()
-    if not cmd:
-        return
-
-    parts = _split(cmd)
-    verb  = parts[0].lower()
-    args  = parts[1:]
-
-    # ---- exit / quit ----
-    if verb in ("exit", "quit"):
-        if active_module:
-            _leave_module()
-        else:
-            print("Exiting ZenCMD.")
-            raise SystemExit(0)
-        return
-
-    # ---- leave ----
-    if verb == "leave":
-        _leave_module()
-        return
-
-    # ---- help (contextual) ----
-    if verb == "help":
-        if not args:
-            if active_module and module_instance and hasattr(module_instance, "help"):
-                module_instance.help()
-            else:
-                _shell_help()
-        else:
-            topic = args[0].lower()
-            if topic in BUILTIN_HELP:
-                print("\n  " + BUILTIN_HELP[topic] + "\n")
-            elif topic in MODULES:
-                m = MODULES[topic]()
-                if hasattr(m, "help"):
-                    m.help()
-                else:
-                    print(f"Module '{topic}' has no help().")
-            else:
-                print(f"No help for '{topic}'.")
-        return
-
-    # ---- super / unsuper ----
-    if verb == "super":
-        _cmd_super()
-        return
-
-    if verb == "unsuper":
-        _cmd_unsuper()
-        return
-
-    # ---- <module> help  (e.g. "pkg help") ----
-    if verb in MODULES and args and args[0].lower() == "help":
-        m = MODULES[verb]()
-        if hasattr(m, "help"):
-            m.help()
-        else:
-            print(f"Module '{verb}' has no help().")
-        return
-
-    # ---- enter <module> or bare module name ----
-    if verb == "enter":
-        if args:
-            _enter_module(args[0])
-        else:
-            print("Usage: enter <module>")
-        return
-
-    if verb in MODULES and not args:
-        _enter_module(verb)
-        return
-
-    # ---- inside-module command dispatch ----
-    if active_module and module_instance:
-        if verb not in BUILTINS and verb not in MODULES:
-            if _require_super(verb):
-                return
-            _dispatch_module(module_instance, verb, [convert_arg(a) for a in args])
-            return
-
-    # ---- one-shot module call: "pkg install foo", "git status" ----
-    if verb in MODULES and args:
-        fn    = args[0]
-        margs = [convert_arg(a) for a in args[1:]]
-        if fn.lower() == "help":
-            m = MODULES[verb]()
-            if hasattr(m, "help"):
-                m.help()
-            else:
-                print(f"Module '{verb}' has no help().")
-            return
-        # Enforce Super Mode at the shell level too -- not just inside
-        # PackageManager -- so one-shot calls get the same gate as
-        # "enter pkg" -> "install foo".
-        if _require_super(fn):
-            return
-        m = MODULES[verb]()
-        logger.debug(f"Module call: {verb}.{fn}", source="ZenCMD")
-        _dispatch_module(m, fn, margs)
-        return
-
-    # ---- built-in commands ----
-    if verb in BUILTINS:
-        handler, needs_super = BUILTINS[verb]
-        if needs_super and not _is_super():
-            print("Access denied. Command requires Super Mode. Use 'super' first.")
-            return
-        handler(args)
-        return
-    if _pm is not None and _pm.check(verb):
-        _pm.run(verb,*args)
-        logger.debug(f"Module call: {verb}", source="ZenCMD")
-        return
-    print(f"Unknown command: {verb}  (type 'help')")
-
-
-# =================================================
-# PIPELINE ("|") + STATEMENT SEQUENCING (";")
-# =================================================
-
-def _run_single(cmd_line, pipe_in=None, capture=False):
-    """Run one pipeline segment. If capture=True, stdout is redirected
-    and the printed lines are returned (for the next segment); otherwise
-    output goes straight to the real terminal and None is returned."""
-    global _PIPE_IN
-    _PIPE_IN = pipe_in
-
-    if not capture:
-        try:
-            _execute(cmd_line)
-        finally:
-            _PIPE_IN = None
+        print("[pkg] Could not start PackageManager: {}".format(e))
         return None
 
-    old_stdout = sys.stdout
-    cap = _OutputCapture()
-    sys.stdout = cap
-    try:
-        _execute(cmd_line)
-    finally:
-        sys.stdout = old_stdout
-        _PIPE_IN = None
-    if cap._buf:
-        cap.lines.append(cap._buf)
-    return cap.lines
+
+# =====================================================================
+# the shell
+# =====================================================================
+
+class RecoveryShell:
+
+    PROMPT = "recovery"
+
+    def __init__(self):
+        self.current_path = "/"
+        self.running = False
+        self._pm = None  # lazily created PackageManager, cached per-session
+
+    # -----------------------------------------------------------
+    # path resolution
+    # -----------------------------------------------------------
+    def _abs(self, path):
+        if not path:
+            return self.current_path
+        if path.startswith("/"):
+            combined = path
+        else:
+            base = self.current_path if self.current_path.endswith("/") else self.current_path + "/"
+            combined = base + path
+        return _normalize_path(combined)
+
+    # -----------------------------------------------------------
+    # main loop
+    # -----------------------------------------------------------
+    def run(self):
+        print("\n=== Zeno OS Recovery Shell ===")
+        print("Minimal shell -- ls/cd/cat/pkg/recover and basic file ops only.")
+        print("Type 'help' for the command list, 'exit' to quit.\n")
+
+        self.running = True
+        while self.running:
+            try:
+                raw = input("{}:{}> ".format(self.PROMPT, self.current_path)).strip()
+            except (KeyboardInterrupt, EOFError):
+                print("\n[recovery] Exiting.")
+                break
+
+            if not raw:
+                continue
+
+            try:
+                self._dispatch(raw)
+            except (KeyboardInterrupt, EOFError):
+                print("\n[recovery] Interrupted.")
+            except Exception as e:
+                # last-resort net: a single broken command must never
+                # kill the shell itself.
+                print("[recovery] Command failed: {}".format(e))
+
+    def _dispatch(self, raw):
+        parts = raw.split()
+        cmd, args = parts[0], parts[1:]
+
+        table = {
+            "help":    self._cmd_help,
+            "ls":      self._cmd_ls,
+            "cd":      self._cmd_cd,
+            "pwd":     self._cmd_pwd,
+            "cat":     self._cmd_cat,
+            "mkdir":   self._cmd_mkdir,
+            "rmdir":   self._cmd_rmdir,
+            "rm":      self._cmd_rm,
+            "cp":      self._cmd_cp,
+            "mv":      self._cmd_mv,
+            "touch":   self._cmd_touch,
+            "stat":    self._cmd_stat,
+            "df":      self._cmd_df,
+            "free":    self._cmd_free,
+            "pkg":     self._cmd_pkg,
+            "recover": self._cmd_recover,
+            "reboot":  self._cmd_reboot,
+            "exit":    self._cmd_exit,
+            "quit":    self._cmd_exit,
+        }
+
+        fn = table.get(cmd)
+        if fn is None:
+            print("Unknown command: '{}'. Type 'help' for the list.".format(cmd))
+            return
+        fn(args)
+
+    # -----------------------------------------------------------
+    # commands
+    # -----------------------------------------------------------
+    def _cmd_help(self, args):
+        print("\nRecovery shell -- minimal command set:")
+        print("  ls [-l] [path]        List directory contents")
+        print("  cd [path]             Change directory (no args -> /)")
+        print("  pwd                   Print current directory")
+        print("  cat <file>            Print file contents")
+        print("  mkdir <dir>           Create a directory (and parents)")
+        print("  rmdir <dir>           Remove an empty directory")
+        print("  rm <file>             Remove a file")
+        print("  rm -r <path>          Remove a file or directory tree")
+        print("  cp <src> <dst>        Copy a file")
+        print("  mv <src> <dst>        Rename/move a file or directory")
+        print("  touch <file>          Create an empty file")
+        print("  stat <path>           Show size/type for a path")
+        print("  df [path]             Show filesystem free/used space")
+        print("  free                  Show RAM free/used (if available)")
+        print("  pkg <args...>         Package manager (needs Services.py)")
+        print("  recover               Rebuild core packages from pkgtable.json")
+        print("  reboot                Reset the device")
+        print("  exit / quit           Leave the recovery shell\n")
+
+    def _cmd_ls(self, args):
+        long_fmt = "-l" in args
+        paths = [a for a in args if not a.startswith("-")]
+        path = self._abs(paths[0]) if paths else self.current_path
+
+        entries = _listdir_safe(path)
+        if entries is None:
+            return
+
+        print("\n{}".format(path))
+        print("-" * 40)
+        for name in sorted(entries):
+            full = _join(path, name)
+            is_d = _is_dir(full)
+            if long_fmt:
+                kind = "<DIR> " if is_d else "      "
+                sz = _human_size(_size(full))
+                print("  {}{:28} {:>10}".format(kind, name, sz))
+            else:
+                print("  {}{}".format(name, "/" if is_d else ""))
+        print()
+
+    def _cmd_cd(self, args):
+        if not args:
+            self.current_path = "/"
+            return
+        target = self._abs(args[0])
+        if not _exists(target):
+            print("[cd] No such path: {}".format(target))
+            return
+        if not _is_dir(target):
+            print("[cd] Not a directory: {}".format(target))
+            return
+        self.current_path = target
+
+    def _cmd_pwd(self, args):
+        print(self.current_path)
+
+    def _cmd_cat(self, args):
+        if not args:
+            print("Usage: cat <file>")
+            return
+        path = self._abs(args[0])
+        try:
+            with open(path, "r") as f:
+                print(f.read())
+        except OSError as e:
+            print("[cat] Could not read '{}': {}".format(path, e))
+
+    def _cmd_mkdir(self, args):
+        if not args:
+            print("Usage: mkdir <dir>")
+            return
+        for d in args:
+            path = self._abs(d)
+            _mkdirs(path)
+            print("Created:", path)
+
+    def _cmd_rmdir(self, args):
+        if not args:
+            print("Usage: rmdir <dir>")
+            return
+        path = self._abs(args[0])
+        if not _is_dir(path):
+            print("[rmdir] Not a directory: {}".format(path))
+            return
+        contents = _listdir_safe(path)
+        if contents:
+            print("[rmdir] Directory not empty: {}".format(path))
+            return
+        try:
+            os.rmdir(path)
+            print("Removed:", path)
+        except OSError as e:
+            print("[rmdir] {}".format(e))
+
+    def _cmd_rm(self, args):
+        recursive = "-r" in args or "-rf" in args
+        targets = [a for a in args if not a.startswith("-")]
+        if not targets:
+            print("Usage: rm [-r] <path>")
+            return
+        path = self._abs(targets[0])
+        if not _exists(path):
+            print("[rm] No such path: {}".format(path))
+            return
+        if _is_dir(path) and not recursive:
+            print("[rm] Is a directory (use 'rm -r' or 'rmdir'): {}".format(path))
+            return
+        _rm_recursive(path)
+        print("Removed:", path)
+
+    def _cmd_cp(self, args):
+        if len(args) < 2:
+            print("Usage: cp <src> <dst>")
+            return
+        src, dst = self._abs(args[0]), self._abs(args[1])
+        if _is_dir(src):
+            print("[cp] Directory copy not supported in recovery shell (files only).")
+            return
+        try:
+            with open(src, "rb") as f_in:
+                data = f_in.read()
+            with open(dst, "wb") as f_out:
+                f_out.write(data)
+            print("Copied {} -> {}".format(src, dst))
+        except OSError as e:
+            print("[cp] {}".format(e))
+
+    def _cmd_mv(self, args):
+        if len(args) < 2:
+            print("Usage: mv <src> <dst>")
+            return
+        src, dst = self._abs(args[0]), self._abs(args[1])
+        try:
+            os.rename(src, dst)
+            print("Moved {} -> {}".format(src, dst))
+        except OSError as e:
+            print("[mv] {}".format(e))
+
+    def _cmd_touch(self, args):
+        if not args:
+            print("Usage: touch <file>")
+            return
+        path = self._abs(args[0])
+        try:
+            if _exists(path):
+                with open(path, "a"):
+                    pass
+            else:
+                with open(path, "w"):
+                    pass
+            print("Touched:", path)
+        except OSError as e:
+            print("[touch] {}".format(e))
+
+    def _cmd_stat(self, args):
+        if not args:
+            print("Usage: stat <path>")
+            return
+        path = self._abs(args[0])
+        if not _exists(path):
+            print("[stat] No such path: {}".format(path))
+            return
+        is_d = _is_dir(path)
+        print("Path : {}".format(path))
+        print("Type : {}".format("directory" if is_d else "file"))
+        if not is_d:
+            print("Size : {}".format(_human_size(_size(path))))
+
+    def _cmd_df(self, args):
+        path = self._abs(args[0]) if args else "/"
+        try:
+            stats = os.statvfs(path)
+            total = stats[2] * stats[0]
+            free = stats[3] * stats[0]
+            used = total - free
+            print("Path  : {}".format(path))
+            print("Total : {}".format(_human_size(total)))
+            print("Used  : {}".format(_human_size(used)))
+            print("Free  : {}".format(_human_size(free)))
+        except OSError as e:
+            print("[df] Could not stat '{}': {}".format(path, e))
+
+    def _cmd_free(self, args):
+        try:
+            import gc
+            gc.collect()
+            free = gc.mem_free()
+            alloc = gc.mem_alloc()
+            total = free + alloc
+            print("RAM total : {}".format(_human_size(total)))
+            print("RAM used  : {}".format(_human_size(alloc)))
+            print("RAM free  : {}".format(_human_size(free)))
+        except Exception as e:
+            print("[free] Memory info unavailable: {}".format(e))
+
+    def _cmd_pkg(self, args):
+        if not args:
+            print("Usage: pkg <install|uninstall|update|list|info|verify> [name]")
+            return
+
+        sub, rest = args[0], args[1:]
+
+        if self._pm is None:
+            self._pm = _try_get_package_manager()
+
+        if self._pm is not None:
+            try:
+                if sub == "install" and rest:
+                    self._pm.install(rest[0])
+                elif sub == "uninstall" and rest:
+                    self._pm.uninstall(rest[0])
+                elif sub == "update":
+                    self._pm.update(rest[0] if rest else None)
+                elif sub == "list":
+                    self._pm.list()
+                elif sub == "info" and rest:
+                    self._pm.info(rest[0])
+                elif sub == "verify":
+                    self._pm.verify()
+                else:
+                    print("Usage: pkg <install|uninstall|update|list|info|verify> [name]")
+            except Exception as e:
+                print("[pkg] '{}' failed: {}".format(sub, e))
+            return
+
+        # Services.py/PackageManager unavailable -- fall back to a direct,
+        # Services-free install straight from pkgtable.json for the one
+        # thing that matters most in this state: getting a named package
+        # (very likely Services.py itself) back onto the filesystem.
+        if sub in ("install", "update") and rest:
+            Recovery = _try_import_recovery()
+            if Recovery is None:
+                print("[pkg] Cannot install '{}' without Services.py or Recovery.py -- "
+                      "neither is available.".format(rest[0]))
+                return
+            print("[pkg] Services.py unavailable -- installing '{}' directly from "
+                  "pkgtable.json instead.".format(rest[0]))
+            try:
+                Recovery().install_package(rest[0])
+            except Exception as e:
+                print("[pkg] Direct install of '{}' failed: {}".format(rest[0], e))
+        else:
+            print("[pkg] '{}' needs Services.py, which is unavailable. Try "
+                  "'pkg install <name>' (works standalone via Recovery), or "
+                  "'recover' to restore core packages including Services.py "
+                  "itself.".format(sub))
+
+    def _cmd_recover(self, args):
+        Recovery = _try_import_recovery()
+        if Recovery is None:
+            print("[recover] Nothing to run -- Recovery.py is not importable "
+                  "(missing from filesystem and not frozen into firmware).")
+            return
+        try:
+            rec = Recovery()
+            rec.run()
+        except KeyboardInterrupt:
+            print("\n[recover] Interrupted.")
+        except Exception as e:
+            print("[recover] Recovery failed: {}".format(e))
+
+    def _cmd_reboot(self, args):
+        try:
+            import machine
+            print("[recovery] Rebooting...")
+            time.sleep_ms(200)
+            machine.reset()
+        except Exception as e:
+            print("[reboot] Could not reset: {}".format(e))
+
+    def _cmd_exit(self, args):
+        self.running = False
+        print("[recovery] Bye.")
 
 
-def _run_statement(stmt):
-    """Run one ';'-separated statement, handling any '|' pipeline within it."""
-    segments = [s.strip() for s in _split_top(stmt, "|")]
-    segments = [s for s in segments if s]
-    if not segments:
-        return
-    if len(segments) == 1:
-        _run_single(segments[0], pipe_in=None, capture=False)
-        return
-
-    data = None
-    for i, seg in enumerate(segments):
-        is_last = (i == len(segments) - 1)
-        data = _run_single(seg, pipe_in=data, capture=not is_last)
+def run():
+    RecoveryShell().run()
 
 
-# =================================================
-# TOP-LEVEL COMMAND HANDLER
-# =================================================
-
-def handle(raw):
-    raw = raw.strip()
-    if not raw:
-        return
-
-    statements = [s.strip() for s in _split_top(raw, ";")]
-    for stmt in statements:
-        if not stmt:
-            continue
-        history_log.append(stmt)
-        _run_statement(stmt)
-
-
-# =================================================
-# STARTUP BANNER
-# =================================================
-print(f"\n{ZENOS_NAME} — ZenCMD {ZENCMD_VERSION}")
-print(f"Logged in as: {zeno.user}")
-if Services is None:
-    print("[ZenCMD] Services unavailable -- most commands are disabled.")
-    print("[ZenCMD] Run 'recover' to rebuild the OS from pkgtable.json.")
-print("Type 'help' for commands.\n")
-logger.debug(f"ZenCMD started, user={zeno.user}", source="ZenCMD")
-
-# =================================================
-# MAIN LOOP
-# =================================================
-while True:
-    try:
-        line = input(_prompt()).strip()
-        handle(line)
-
-    except SystemExit:
-        logger.debug("ZenCMD exited normally", source="ZenCMD")
-        break
-
-    except KeyboardInterrupt:
-        print("\n[ZenCMD] ^C")
-
-    except Exception as e:
-        print("[ZenCMD] Error:", e)
-        logger.error(str(e), source="ZenCMD")
-
+if __name__ == "__main__":
+    run()
