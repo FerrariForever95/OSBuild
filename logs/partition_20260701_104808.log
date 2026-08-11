@@ -1,0 +1,6 @@
+[10:48:50] [INFO] Partition CSV set to: partitions-16MiB-zeno.csv
+[10:48:50] [INFO] mpconfigboard.mk: /home/shanmukh/OSBuild/ports/esp32/boards/ESP32_GENERIC_S3/mpconfigboard.mk
+[10:48:50] [INFO] Backup: /home/shanmukh/OSBuild/.config/backups/mpconfigboard.mk.backup_20260701_104850
+[10:49:13] [INFO] Partition CSV set to: partitions-16MiB-zeno.csv
+[10:49:13] [INFO] mpconfigboard.mk: /home/shanmukh/OSBuild/ports/esp32/boards/ESP32_GENERIC_S3/mpconfigboard.mk
+[10:49:13] [INFO] Backup: /home/shanmukh/OSBuild/.config/backups/mpconfigboard.mk.backup_20260701_104913

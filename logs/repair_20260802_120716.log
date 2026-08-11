@@ -1,0 +1,1 @@
+[12:07:24] [INFO] Board 'SHRIKE_FI' sdkconfig applied: PSRAM=QUAD FLASH_MODE=dio FLASH_SIZE=8MB (backup: /home/shanmukh/OSBuild/.config/backups/sdkconfig.spiram_sx.backup_20260802_120724)

@@ -1,0 +1,1 @@
+[14:12:25] [INFO] Board 'ESP32S3_GENERIC' sdkconfig applied: PSRAM=OCT FLASH_MODE=qio FLASH_SIZE=16MB (backup: /home/shanmukh/OSBuild/.config/backups/sdkconfig.spiram_sx.backup_20260802_141225)

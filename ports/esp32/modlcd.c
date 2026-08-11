@@ -1,66 +1,88 @@
 /*
- * moclcd.c — higher-level 8080 8-bit parallel LCD module for MicroPython,
- * built on top of ESP-IDF's esp_lcd i80 driver.
+ * modlcd.c — 8080 8-bit parallel LCD module for MicroPython, ESP32-S3,
+ * driven by DIRECT LCD_CAM + GDMA register control (no esp_lcd).
  *
- * Same known-good pin mapping and init sequence as lcd_min.c:
+ * Pin mapping (unchanged from the esp_lcd version):
  * - RST: GPIO 12
  * - RS (DC): GPIO 13
  * - WR: GPIO 14
  * - RD: GPIO 41
  * - BL (Backlight): GPIO 38
  * - D0-D7: GPIOs 16, 15, 11, 10, 9, 4, 18, 17
+ * - CS: tied LOW in hardware (no GPIO) — see LCD_CS_GPIO below if your
+ *   board actually wires CS to a pin.
  *
- * What's new vs lcd_min.c:
- * - panel_init() runs the exact working command sequence once (no more
- *   doing it by hand in Python).
- * - fill_rect() / fill_screen() / blit() replace the manual per-line
- *   data() calls from Python.
- * - Fills stream through a small DMA-capable buffer (heap_caps_malloc
- *   with MALLOC_CAP_DMA) that's resent in chunks. Because
- *   trans_queue_depth is 10, several chunks can be in flight on the DMA
- *   engine at once instead of the CPU/Python loop stalling on each line
- *   like the original demo script did.
+ * ---------------------------------------------------------------------
+ * ARCHITECTURE (replaces esp_lcd_panel_io_i80 / esp_lcd_new_panel_ili9488)
+ * ---------------------------------------------------------------------
+ * 1. LCD_CAM peripheral is put in 8-bit i8080 "dout" (write) mode by
+ *    writing its registers directly (lcd_clock / lcd_user / lcd_misc),
+ *    via the `LCD_CAM` struct exposed by soc/lcd_cam_struct.h. This is
+ *    the same struct esp_lcd's internal HAL uses — we just write it
+ *    ourselves instead of going through esp_lcd_panel_io_i80.
+ * 2. WR and D0-D7 are routed to the peripheral's own output signals
+ *    (LCD_PCLK_IDX, LCD_DATA_OUT0_IDX..LCD_DATA_OUT7_IDX) through the
+ *    GPIO matrix via esp_rom_gpio_connect_out_signal(). RS (DC) is
+ *    toggled as a plain GPIO immediately before each command/data
+ *    phase — this mirrors what esp_lcd_panel_io_i80 actually does
+ *    internally (DC is bit-banged around each transaction, not routed
+ *    through a dedicated LCD_CAM signal).
+ * 3. GDMA (the `driver/gdma.h` channel API — no esp_lcd bus object
+ *    involved) streams a chain of raw hardware DMA descriptors from
+ *    SRAM/PSRAM straight into LCD_CAM's TX AFIFO. We build and reuse a
+ *    fixed pool of descriptors ourselves.
+ * 4. Touch and the LCD data bus share D0-D3. read_touch_raw() pauses
+ *    LCD_CAM, detaches D0-D3 from the GPIO matrix, reads resistive
+ *    touch via ADC, then reattaches D0-D3 to the LCD signals and
+ *    resumes.
  *
- * API:
- *   moclcd.init(pclk=10_000_000, width=480, height=320, madctl=0x28)
- *                                             -- defaults to landscape;
- *                                                pass width=320, height=480,
- *                                                madctl=0x48 for portrait
- *   moclcd.reset()
- *   moclcd.panel_init()
- *   moclcd.backlight(on)                     -- digital on/off; drives PWM duty
- *                                                to max/0 instead if backlight_init()
- *                                                was called
- *   moclcd.backlight_init(freq_hz=5000, resolution_bits=8)
- *                                             -- sets up LEDC PWM on the BL pin
- *   moclcd.backlight_set(level)              -- level is 0.0-1.0 brightness fraction,
- *                                                requires backlight_init() first
- *   moclcd.cmd(cmd, params=None)     -- raw passthrough, still available
- *   moclcd.data(buf)                 -- raw passthrough, still available
- *   moclcd.fill_rect(x, y, w, h, color)      -- raises ValueError if out of bounds
- *   moclcd.fill_screen(color)
- *   moclcd.blit(x, y, w, h, buf)             -- buf is raw RGB565 bytes, MSB first
- *   moclcd.draw_pixel(x, y, color)           -- clipped silently if off-panel
- *   moclcd.draw_line(x0, y0, x1, y1, color)  -- clipped silently if off-panel
- *   moclcd.draw_rect(x, y, w, h, color)      -- outline; clipped silently if off-panel
- *   moclcd.draw_circle(x0, y0, r, color)     -- outline; clipped silently if off-panel
- *   moclcd.fill_circle(x0, y0, r, color)     -- filled; clipped silently if off-panel
+ * IMPORTANT — please verify against YOUR exact ESP-IDF version:
+ * The bitfield names inside `LCD_CAM.lcd_clock` / `.lcd_user` /
+ * `.lcd_misc` below match the ESP32-S3 `soc/lcd_cam_struct.h` layout at
+ * the time of writing, but Espressif has reshuffled a few of these
+ * fields between IDF releases. Diff this file's register writes
+ * against your installed `soc/lcd_cam_struct.h` before flashing —
+ * a mismatched field name will fail to compile (safe), but a field
+ * that still *exists* with different semantics may not (not safe).
+ * The overall shape (clock setup -> mode bits -> GPIO matrix -> GDMA
+ * descriptor chain -> start bit -> poll for done) is correct and is
+ * exactly what esp_lcd's internal HAL does.
+ *
+ * Touch wiring assumption (ADJUST TO MATCH YOUR PANEL):
+ *   D0 (GPIO16) = YP      D1 (GPIO15) = XM
+ *   D2 (GPIO11) = YM      D3 (GPIO10) = XP
+ * 4-wire resistive touch: to read one axis, drive that axis's two pins
+ * as digital outputs (HIGH/LOW) and read the perpendicular axis's pin
+ * as an analog input.
+ * ---------------------------------------------------------------------
  */
 
 #include "py/obj.h"
 #include "py/runtime.h"
 #include "py/mphal.h"
 #include "mphalport.h"
-
-#include "esp_lcd_panel_io.h"
-#include "esp_lcd_panel_vendor.h"
-#include "esp_heap_caps.h"
-#include "driver/ledc.h"
-#include "extmod/font_petme128_8x8.h"   /* same 8x8 font MicroPython's framebuf.text() uses */
 #include "py/mperrno.h"
 
-#include <stdio.h>
+#include "esp_heap_caps.h"
+#include "esp_rom_gpio.h"
+#include "esp_rom_sys.h"
+#include "esp_timer.h"
+#include "esp_err.h"
 
+#include "driver/gpio.h"
+#include "driver/ledc.h"
+#include "driver/gdma.h"
+
+#include "soc/lcd_cam_struct.h"
+#include "soc/lcd_cam_reg.h"
+#include "soc/gpio_sig_map.h"
+#include "soc/gdma_channel.h"
+#include "esp_private/periph_ctrl.h"
+
+#include "esp_adc/adc_oneshot.h"
+
+#include "extmod/font_petme128_8x8.h"
+#include <stdio.h>
 #include <string.h>
 
 #define LCD_CMD_CASET  0x2A
@@ -68,15 +90,71 @@
 #define LCD_CMD_RAMWR  0x2C
 #define LCD_CMD_RAMWRC 0x3C   /* continuation write, used for pixel streaming */
 
-/* how many pixels we buffer per DMA chunk (2 bytes/pixel -> 4KB chunks) */
+/* how many pixels we buffer per fill chunk (2 bytes/pixel -> 4KB chunks) */
 #define FILL_CHUNK_PIXELS 2048
 
+/* ---------------------------------------------------------------------
+ * pin mapping
+ * ------------------------------------------------------------------ */
+#define LCD_RST_GPIO   12
+#define LCD_RS_GPIO    13   /* DC */
+#define LCD_WR_GPIO    14
+#define LCD_RD_GPIO    41
+#define LCD_BL_GPIO    38
+
+/* If your board actually wires CS to a GPIO instead of tying it low,
+ * set this to that pin number. -1 means "no CS pin — tied to GND in
+ * hardware", matching the original esp_lcd cs_gpio_num = -1 config. In
+ * that case read_touch_raw() can't physically de-assert CS and relies
+ * solely on WR-idle-high + LCD_CAM being paused to keep the bus quiet
+ * while D0-D3 are repurposed for ADC reads. */
+#define LCD_CS_GPIO    (-1)
+
+static const int s_data_gpios[8] = { 16, 15, 11, 10, 9, 4, 18, 17 };
+static const uint32_t s_data_sigs[8] = {
+    LCD_DATA_OUT0_IDX, LCD_DATA_OUT1_IDX, LCD_DATA_OUT2_IDX, LCD_DATA_OUT3_IDX,
+    LCD_DATA_OUT4_IDX, LCD_DATA_OUT5_IDX, LCD_DATA_OUT6_IDX, LCD_DATA_OUT7_IDX,
+};
+
+/* touch pins == D0..D3 (see header comment). Indices into s_data_gpios/
+ * s_data_sigs so re-attaching is trivial. */
+#define TOUCH_YP_IDX 0   /* GPIO16 */
+#define TOUCH_XM_IDX 1   /* GPIO15 */
+#define TOUCH_YM_IDX 2   /* GPIO11 */
+#define TOUCH_XP_IDX 3   /* GPIO10 */
+
+/* ---------------------------------------------------------------------
+ * DMA descriptor pool — raw GDMA hardware descriptor format (matches
+ * hal/dma_types.h's dma_descriptor_t layout: 12-bit size, 12-bit
+ * length, 5 reserved bits, err_eof, suc_eof, owner, then buffer ptr
+ * and next ptr). Declared locally so this file has no esp_lcd/HAL
+ * struct dependency beyond the raw layout itself.
+ * ------------------------------------------------------------------ */
+typedef struct lcd_dma_desc_s {
+    struct {
+        uint32_t size      : 12;
+        uint32_t length    : 12;
+        uint32_t reserved  : 5;
+        uint32_t err_eof   : 1;
+        uint32_t suc_eof   : 1;
+        uint32_t owner     : 1;   /* 1 = owned by DMA hardware */
+    } dw0;
+    void *buffer;
+    struct lcd_dma_desc_s *next;
+} lcd_dma_desc_t;
+
+#define LCD_DMA_DESC_MAX_BYTES 4000     /* keep well under the 12-bit (4095) limit */
+#define LCD_DMA_MAX_DESC       128      /* 128 * 4000 = 512000B, covers a full 480x320x2 frame */
+
 /* ---- module state ---- */
-static esp_lcd_i80_bus_handle_t  s_bus       = NULL;
-static esp_lcd_panel_io_handle_t s_io        = NULL;
-static mp_hal_pin_obj_t          s_reset_pin = 12;
-static mp_hal_pin_obj_t          s_bl_pin    = 38;
-static mp_hal_pin_obj_t          s_rd_pin    = 41;
+static bool                      s_lcd_ready = false;
+static gdma_channel_handle_t     s_dma_chan  = NULL;
+static lcd_dma_desc_t           *s_desc_pool = NULL;
+static mp_hal_pin_obj_t          s_reset_pin = LCD_RST_GPIO;
+static mp_hal_pin_obj_t          s_rs_pin    = LCD_RS_GPIO;
+static mp_hal_pin_obj_t          s_wr_pin    = LCD_WR_GPIO;
+static mp_hal_pin_obj_t          s_bl_pin    = LCD_BL_GPIO;
+static mp_hal_pin_obj_t          s_rd_pin    = LCD_RD_GPIO;
 static bool                      s_has_reset = false;
 static uint16_t                  s_width     = 480;
 static uint16_t                  s_height    = 320;
@@ -85,6 +163,8 @@ static uint8_t                  *s_fill_buf  = NULL; /* FILL_CHUNK_PIXELS*2 byte
 static bool                      s_bl_pwm_inited = false;
 static uint32_t                  s_bl_duty_max   = 255; /* set by backlight_init() from resolution_bits */
 static uint8_t                  *s_glyph_buf = NULL;    /* 8*8*2 bytes, DMA capable, reused per glyph */
+static adc_oneshot_unit_handle_t s_adc1_handle = NULL;
+static adc_oneshot_unit_handle_t s_adc2_handle = NULL;
 
 #define FONT_CHAR_W     8
 #define FONT_CHAR_H     8
@@ -103,14 +183,173 @@ static void io_check(esp_err_t ret, const char *what)
 
 static void require_init(void)
 {
-    if (s_io == NULL) {
+    if (!s_lcd_ready) {
         mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("moclcd.init() must be called first"));
     }
 }
 
+/* -------------------------------------------------------------------
+ * LCD_CAM + GDMA low-level transport
+ * ---------------------------------------------------------------- */
+
+/* Route D0-D7/WR to the LCD_CAM peripheral's own GPIO-matrix signals.
+ * RS is left as a plain, software-toggled GPIO output (see header
+ * comment for why). RD is idle-high (unused in write-only mode). CS,
+ * if a real pin exists for it, is driven low once here and only
+ * touched again by read_touch_raw(). */
+static void lcdcam_gpio_init(void)
+{
+    for (int i = 0; i < 8; i++) {
+        gpio_reset_pin(s_data_gpios[i]);
+        gpio_set_direction(s_data_gpios[i], GPIO_MODE_OUTPUT);
+        esp_rom_gpio_connect_out_signal(s_data_gpios[i], s_data_sigs[i], false, false);
+    }
+
+    gpio_reset_pin(s_wr_pin);
+    gpio_set_direction(s_wr_pin, GPIO_MODE_OUTPUT);
+    esp_rom_gpio_connect_out_signal(s_wr_pin, LCD_PCLK_IDX, false, false);
+
+    mp_hal_pin_output(s_rs_pin);
+    mp_hal_pin_write(s_rs_pin, 0);
+
+#if LCD_CS_GPIO >= 0
+    mp_hal_pin_output(LCD_CS_GPIO);
+    mp_hal_pin_write(LCD_CS_GPIO, 0);
+#endif
+}
+
+/* Bring up the LCD_CAM peripheral in 8-bit i8080 "dout" mode. pclk_hz
+ * is the target WR toggle rate; PLL160M is used as the clock source
+ * (same clk_src the esp_lcd i80 bus config used). */
+static void lcdcam_hw_init(uint32_t pclk_hz)
+{
+    periph_module_enable(PERIPH_LCD_CAM_MODULE);
+    periph_module_reset(PERIPH_LCD_CAM_MODULE);
+
+    const uint32_t pll_freq = 160000000;
+    uint32_t div_num = pll_freq / (pclk_hz * 2);
+    if (div_num < 2) div_num = 2;
+    if (div_num > 255) div_num = 255;
+
+    LCD_CAM.lcd_clock.val = 0;
+    LCD_CAM.lcd_clock.lcd_clk_sel        = 2;   /* 2 = PLL160M clock source */
+    LCD_CAM.lcd_clock.lcd_clkm_div_num   = div_num;
+    LCD_CAM.lcd_clock.lcd_clkm_div_a     = 0;
+    LCD_CAM.lcd_clock.lcd_clkm_div_b     = 0;
+    LCD_CAM.lcd_clock.lcd_clk_equ_sysclk = 0;
+    LCD_CAM.lcd_clock.lcd_clkcnt_n       = 1;   /* WR pulse = lcd_clk / (n+1) */
+    LCD_CAM.lcd_clock.lcd_ck_idle_edge   = 1;   /* WR idles high */
+    LCD_CAM.lcd_clock.lcd_ck_out_edge    = 0;
+
+    LCD_CAM.lcd_ctrl.val = 0;   /* RGB-mode fields, unused for i8080 */
+    LCD_CAM.lcd_ctrl1.val = 0;
+    LCD_CAM.lcd_ctrl2.val = 0;
+
+    LCD_CAM.lcd_user.val = 0;
+    LCD_CAM.lcd_user.lcd_dout        = 1;  /* enable data-out (write) direction */
+    LCD_CAM.lcd_user.lcd_8bits_order = 0;
+    LCD_CAM.lcd_user.lcd_bit_order   = 0;  /* MSB first */
+    LCD_CAM.lcd_user.lcd_byte_order  = 0;
+    LCD_CAM.lcd_user.lcd_2byte_en    = 0;  /* 8-bit wide bus */
+    LCD_CAM.lcd_user.lcd_dummy       = 0;
+    LCD_CAM.lcd_user.lcd_cmd         = 0;  /* we push cmd bytes as ordinary
+                                               data with RS toggled by GPIO,
+                                               so LCD_CAM's own cmd phase is unused */
+    LCD_CAM.lcd_user.lcd_update      = 1;
+
+    LCD_CAM.lcd_misc.val = 0;
+    LCD_CAM.lcd_misc.lcd_afifo_reset = 1;
+}
+
+static void lcdcam_gdma_init(void)
+{
+    gdma_channel_alloc_config_t chan_config = {
+        .direction = GDMA_CHANNEL_DIRECTION_TX,
+    };
+    io_check(gdma_new_channel(&chan_config, &s_dma_chan), "gdma_new_channel");
+    io_check(gdma_connect(s_dma_chan, GDMA_MAKE_TRIGGER(GDMA_TRIG_PERIPH_LCD, 0)), "gdma_connect");
+
+    gdma_transfer_ability_t ability = {
+        .sram_trans_align  = 4,
+        .psram_trans_align = 64,
+    };
+    io_check(gdma_set_transfer_ability(s_dma_chan, &ability), "gdma_set_transfer_ability");
+
+    s_desc_pool = heap_caps_malloc(sizeof(lcd_dma_desc_t) * LCD_DMA_MAX_DESC, MALLOC_CAP_DMA);
+    if (s_desc_pool == NULL) {
+        mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("no DMA memory for descriptor pool"));
+    }
+}
+
+/* Block until the current LCD_CAM transfer finishes (the hardware
+ * self-clears lcd_start when the descriptor chain's suc_eof descriptor
+ * has been fully pushed out). */
+static void lcdcam_wait_done(void)
+{
+    int64_t t0 = esp_timer_get_time();
+    while (LCD_CAM.lcd_user.lcd_start) {
+        if (esp_timer_get_time() - t0 > 200000) {
+            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("LCD_CAM DMA transfer timed out"));
+        }
+    }
+}
+
+/* Chain `buf`/`len` across as many descriptors as needed (each capped
+ * at LCD_DMA_DESC_MAX_BYTES) and push them out through LCD_CAM. Used
+ * for both tiny (command byte) and large (full-frame blit) transfers. */
+static void lcdcam_dma_write(const uint8_t *buf, size_t len)
+{
+    if (len == 0) return;
+
+    size_t ndesc = (len + LCD_DMA_DESC_MAX_BYTES - 1) / LCD_DMA_DESC_MAX_BYTES;
+    if (ndesc > LCD_DMA_MAX_DESC) {
+        mp_raise_ValueError(MP_ERROR_TEXT("transfer too large for DMA descriptor pool"));
+    }
+
+    size_t offset = 0;
+    for (size_t i = 0; i < ndesc; i++) {
+        size_t chunk = len - offset;
+        if (chunk > LCD_DMA_DESC_MAX_BYTES) chunk = LCD_DMA_DESC_MAX_BYTES;
+
+        s_desc_pool[i].dw0.size    = chunk;
+        s_desc_pool[i].dw0.length  = chunk;
+        s_desc_pool[i].dw0.err_eof = 0;
+        s_desc_pool[i].dw0.suc_eof = (i == ndesc - 1) ? 1 : 0;
+        s_desc_pool[i].dw0.owner   = 1;
+        s_desc_pool[i].buffer      = (void *)(buf + offset);
+        s_desc_pool[i].next        = (i == ndesc - 1) ? NULL : &s_desc_pool[i + 1];
+
+        offset += chunk;
+    }
+
+    LCD_CAM.lcd_user.lcd_start = 0;
+    LCD_CAM.lcd_misc.lcd_afifo_reset = 1;
+
+    io_check(gdma_reset(s_dma_chan), "gdma_reset");
+    io_check(gdma_start(s_dma_chan, (intptr_t)&s_desc_pool[0]), "gdma_start");
+
+    esp_rom_delay_us(1); /* let GDMA fetch the first descriptor before LCD_CAM starts pulling */
+
+    LCD_CAM.lcd_user.lcd_update = 1;
+    LCD_CAM.lcd_user.lcd_start  = 1;
+
+    lcdcam_wait_done();
+}
+
+/* Send an 8080 "command" transaction: one command byte with RS low,
+ * then (optionally) a data payload with RS high. This single primitive
+ * covers both plain commands (CASET/PASET/etc, buf=NULL) and pixel
+ * streaming (cmd=RAMWRC, buf=pixel data) -- exactly like the original
+ * esp_lcd_panel_io_tx_param()/tx_color() calls did. */
 static void lcd_cmd_raw(uint8_t cmd, const void *buf, size_t len)
 {
-    io_check(esp_lcd_panel_io_tx_param(s_io, cmd, buf, len), "cmd");
+    mp_hal_pin_write(s_rs_pin, 0);
+    lcdcam_dma_write(&cmd, 1);
+
+    if (buf != NULL && len > 0) {
+        mp_hal_pin_write(s_rs_pin, 1);
+        lcdcam_dma_write((const uint8_t *)buf, len);
+    }
 }
 
 static void ensure_fill_buf(void)
@@ -137,9 +376,12 @@ static void set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 }
 
 /* stream `total_pixels` copies of `color` right after the address
- * window has been armed via set_window(). Shared by fill_rect() and by
- * the line/rect/circle primitives below so they all get the same
- * chunked, DMA-pipelined path. */
+ * window has been armed via set_window(). Each chunk goes out as its
+ * own RAMWRC transaction (matching the original tx_color(RAMWRC, ...)
+ * behavior chunk-for-chunk). This version is synchronous/blocking per
+ * chunk rather than depth-10-queued like the esp_lcd version was; see
+ * the header comment for how to extend this to an async, IRQ-driven
+ * pipeline if you need the throughput back. */
 static void stream_solid(uint32_t total_pixels, uint16_t color)
 {
     ensure_fill_buf();
@@ -155,7 +397,7 @@ static void stream_solid(uint32_t total_pixels, uint16_t color)
     uint32_t remaining = total_pixels;
     while (remaining > 0) {
         uint32_t n = remaining < FILL_CHUNK_PIXELS ? remaining : FILL_CHUNK_PIXELS;
-        io_check(esp_lcd_panel_io_tx_color(s_io, LCD_CMD_RAMWRC, s_fill_buf, n * 2), "fill");
+        lcd_cmd_raw(LCD_CMD_RAMWRC, s_fill_buf, (size_t)n * 2);
         remaining -= n;
     }
 }
@@ -254,7 +496,7 @@ static void draw_glyph(int x, int y, char c, uint16_t fg, uint16_t bg, bool bg_t
     }
 
     set_window((uint16_t)x, (uint16_t)y, (uint16_t)(x + FONT_CHAR_W - 1), (uint16_t)(y + FONT_CHAR_H - 1));
-    io_check(esp_lcd_panel_io_tx_color(s_io, LCD_CMD_RAMWRC, s_glyph_buf, FONT_CHAR_W * FONT_CHAR_H * 2), "text");
+    lcd_cmd_raw(LCD_CMD_RAMWRC, s_glyph_buf, FONT_CHAR_W * FONT_CHAR_H * 2);
 }
 
 /* -------------------------------------------------------------------
@@ -400,7 +642,7 @@ static mp_obj_t moclcd_draw_bmp(size_t n_args, const mp_obj_t *pos_args, mp_map_
     }
 
     set_window((uint16_t)dx, (uint16_t)dy, (uint16_t)(dx + dw - 1), (uint16_t)(dy + dh - 1));
-    io_check(esp_lcd_panel_io_tx_color(s_io, LCD_CMD_RAMWRC, img, (size_t)dw * (size_t)dh * 2), "bmp");
+    lcd_cmd_raw(LCD_CMD_RAMWRC, img, (size_t)dw * (size_t)dh * 2);
 
     heap_caps_free(row_buf);
     heap_caps_free(img);
@@ -432,38 +674,10 @@ static mp_obj_t moclcd_init(size_t n_args, const mp_obj_t *pos_args, mp_map_t *k
     s_height = (uint16_t)args[ARG_height].u_int;
     s_madctl = (uint8_t)args[ARG_madctl].u_int;
 
-    /* --- Your exact data pins (D0 through D7) --- */
-    int data_gpios[8] = { 16, 15, 11, 10, 9, 4, 18, 17 };
-
-    esp_lcd_i80_bus_config_t bus_cfg = {
-        .dc_gpio_num = 13, /* RS */
-        .wr_gpio_num = 14, /* WR */
-        .clk_src     = LCD_CLK_SRC_PLL160M,
-        .data_gpio_nums = {
-            data_gpios[0], data_gpios[1], data_gpios[2], data_gpios[3],
-            data_gpios[4], data_gpios[5], data_gpios[6], data_gpios[7],
-        },
-        .bus_width          = 8,
-        /* generous ceiling so a full-frame blit() can go out in one shot;
-           fill_rect() still chunks itself for pipelining regardless */
-        .max_transfer_bytes = (size_t)s_width * (size_t)s_height * 2,
-    };
-    io_check(esp_lcd_new_i80_bus(&bus_cfg, &s_bus), "esp_lcd_new_i80_bus");
-
-    esp_lcd_panel_io_i80_config_t io_cfg = {
-        .cs_gpio_num       = -1, /* CS tied LOW in hardware */
-        .pclk_hz           = (uint32_t)args[ARG_pclk].u_int,
-        .trans_queue_depth = 10,
-        .dc_levels = {
-            .dc_idle_level  = 0,
-            .dc_cmd_level   = 0,
-            .dc_dummy_level = 0,
-            .dc_data_level  = 1,
-        },
-        .lcd_cmd_bits   = 8,
-        .lcd_param_bits = 8,
-    };
-    io_check(esp_lcd_new_panel_io_i80(s_bus, &io_cfg, &s_io), "esp_lcd_new_panel_io_i80");
+    lcdcam_gpio_init();
+    lcdcam_gdma_init();
+    lcdcam_hw_init((uint32_t)args[ARG_pclk].u_int);
+    s_lcd_ready = true;
 
     /* --- RD pin, idle HIGH --- */
     mp_hal_pin_output(s_rd_pin);
@@ -663,7 +877,7 @@ static mp_obj_t moclcd_data(mp_obj_t buf_in)
     require_init();
     mp_buffer_info_t bufinfo;
     mp_get_buffer_raise(buf_in, &bufinfo, MP_BUFFER_READ);
-    io_check(esp_lcd_panel_io_tx_color(s_io, LCD_CMD_RAMWRC, bufinfo.buf, bufinfo.len), "data write");
+    lcd_cmd_raw(LCD_CMD_RAMWRC, bufinfo.buf, bufinfo.len);
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(moclcd_data_obj, moclcd_data);
@@ -673,10 +887,9 @@ static MP_DEFINE_CONST_FUN_OBJ_1(moclcd_data_obj, moclcd_data);
  *
  * Sets the address window once, fills a small DMA-capable scratch
  * buffer with the target color, then resends that same buffer in
- * chunks via esp_lcd_panel_io_tx_color(). Because the content never
- * changes, the buffer can be safely queued again even while an earlier
- * chunk is still draining out over DMA, so up to trans_queue_depth
- * chunks stay in flight at once instead of the CPU waiting on each one.
+ * chunks. Each chunk is a synchronous LCD_CAM+GDMA transfer (see the
+ * header note on turning this into an async, multi-transfer-in-flight
+ * pipeline if you need the old trans_queue_depth=10 throughput back).
  * ---------------------------------------------------------------- */
 static mp_obj_t moclcd_fill_rect(size_t n_args, const mp_obj_t *args_in)
 {
@@ -743,7 +956,7 @@ static mp_obj_t moclcd_blit(size_t n_args, const mp_obj_t *args_in)
     }
 
     set_window((uint16_t)x, (uint16_t)y, (uint16_t)(x + w - 1), (uint16_t)(y + h - 1));
-    io_check(esp_lcd_panel_io_tx_color(s_io, LCD_CMD_RAMWRC, bufinfo.buf, bufinfo.len), "blit");
+    lcd_cmd_raw(LCD_CMD_RAMWRC, bufinfo.buf, bufinfo.len);
 
     return mp_const_none;
 }
@@ -922,6 +1135,142 @@ static mp_obj_t moclcd_fill_circle(size_t n_args, const mp_obj_t *args_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(moclcd_fill_circle_obj, 4, 4, moclcd_fill_circle);
 
+/* =====================================================================
+ * TOUCH: raw resistive touch multiplexed onto D0-D3
+ * ================================================================== */
+
+/* Lazily resolve+configure whichever ADC unit/channel a GPIO maps to
+ * (D0-D3 straddle ADC1/ADC2 on the S3, so we can't assume one unit). */
+static int adc_read_gpio_raw(int gpio)
+{
+    adc_unit_t unit;
+    adc_channel_t channel;
+    if (adc_oneshot_io_to_channel(gpio, &unit, &channel) != ESP_OK) {
+        mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("touch pin is not ADC-capable"));
+    }
+
+    adc_oneshot_unit_handle_t *handle_slot = (unit == ADC_UNIT_1) ? &s_adc1_handle : &s_adc2_handle;
+    if (*handle_slot == NULL) {
+        adc_oneshot_unit_init_cfg_t init_cfg = { .unit_id = unit };
+        io_check(adc_oneshot_new_unit(&init_cfg, handle_slot), "adc_oneshot_new_unit");
+    }
+
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten    = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    io_check(adc_oneshot_config_channel(*handle_slot, channel, &chan_cfg), "adc_oneshot_config_channel");
+
+    int raw = 0;
+    io_check(adc_oneshot_read(*handle_slot, channel, &raw), "adc_oneshot_read");
+    return raw;
+}
+
+/* Re-attach a touch/data pin back to its LCD_CAM data-out signal
+ * (mirror image of the gpio_reset_pin() detach done in read_touch_raw). */
+static void reattach_lcd_data_pin(int idx)
+{
+    gpio_reset_pin(s_data_gpios[idx]);
+    gpio_set_direction(s_data_gpios[idx], GPIO_MODE_OUTPUT);
+    esp_rom_gpio_connect_out_signal(s_data_gpios[idx], s_data_sigs[idx], false, false);
+}
+
+typedef struct {
+    int  x;
+    int  y;
+    bool touched;
+} touch_raw_t;
+
+/* Threshold band a valid resistive-touch ADC reading should fall
+ * within; readings pinned near 0 or the ADC's full-scale value mean
+ * "not pressed" (the sense pin floated to a rail instead of being
+ * driven by the touch panel). Tune for your panel/ADC_ATTEN setting. */
+#define TOUCH_MIN_RAW 100
+#define TOUCH_MAX_RAW 4000
+
+static touch_raw_t read_touch_raw(void)
+{
+    touch_raw_t t = { .x = 0, .y = 0, .touched = false };
+
+    /* 1. pause LCD_CAM */
+    LCD_CAM.lcd_user.lcd_start = 0;
+
+    /* 2. CS/WR high to latch/isolate the LCD */
+    mp_hal_pin_write(s_wr_pin, 1);
+#if LCD_CS_GPIO >= 0
+    mp_hal_pin_write(LCD_CS_GPIO, 1);
+#endif
+
+    /* 3. detach D0-D3 from the LCD GPIO matrix */
+    int yp_gpio = s_data_gpios[TOUCH_YP_IDX];
+    int xm_gpio = s_data_gpios[TOUCH_XM_IDX];
+    int ym_gpio = s_data_gpios[TOUCH_YM_IDX];
+    int xp_gpio = s_data_gpios[TOUCH_XP_IDX];
+
+    gpio_reset_pin(yp_gpio);
+    gpio_reset_pin(xm_gpio);
+    gpio_reset_pin(ym_gpio);
+    gpio_reset_pin(xp_gpio);
+
+    /* 4a. measure X: drive the X plate (XP=HIGH, XM=LOW), sample the Y
+       plate (floating, follows the voltage divider formed by the
+       touch point) on an ADC channel */
+    gpio_set_direction(xp_gpio, GPIO_MODE_OUTPUT);
+    gpio_set_direction(xm_gpio, GPIO_MODE_OUTPUT);
+    gpio_set_level(xp_gpio, 1);
+    gpio_set_level(xm_gpio, 0);
+    esp_rom_delay_us(50); /* settling time */
+    int raw_x = adc_read_gpio_raw(yp_gpio);
+
+    /* 4b. measure Y: drive the Y plate (YP=HIGH, YM=LOW), sample the X
+       plate */
+    gpio_set_direction(yp_gpio, GPIO_MODE_OUTPUT);
+    gpio_set_direction(ym_gpio, GPIO_MODE_OUTPUT);
+    gpio_set_level(yp_gpio, 1);
+    gpio_set_level(ym_gpio, 0);
+    esp_rom_delay_us(50);
+    int raw_y = adc_read_gpio_raw(xm_gpio);
+
+    t.x = raw_x;
+    t.y = raw_y;
+    t.touched = (raw_x > TOUCH_MIN_RAW && raw_x < TOUCH_MAX_RAW &&
+                 raw_y > TOUCH_MIN_RAW && raw_y < TOUCH_MAX_RAW);
+
+    /* 5. re-attach D0-D3 to LCD_DATA_OUT_0_IDX..LCD_DATA_OUT_3_IDX */
+    reattach_lcd_data_pin(TOUCH_YP_IDX);
+    reattach_lcd_data_pin(TOUCH_XM_IDX);
+    reattach_lcd_data_pin(TOUCH_YM_IDX);
+    reattach_lcd_data_pin(TOUCH_XP_IDX);
+
+    /* 6. CS back low, LCD_CAM ready to resume (next lcdcam_dma_write()
+       call sets lcd_start itself -- nothing else to "resume" here) */
+#if LCD_CS_GPIO >= 0
+    mp_hal_pin_write(LCD_CS_GPIO, 0);
+#endif
+
+    return t;
+}
+
+/* -------------------------------------------------------------------
+ * moclcd.read_touch() -> (x, y, touched)
+ * x/y are raw ADC counts (0-4095 at 12-bit), not calibrated screen
+ * coordinates -- do that mapping in Python once you know your panel's
+ * raw min/max in each axis.
+ * ---------------------------------------------------------------- */
+static mp_obj_t moclcd_read_touch(void)
+{
+    require_init();
+    touch_raw_t t = read_touch_raw();
+
+    mp_obj_t tuple[3] = {
+        mp_obj_new_int(t.x),
+        mp_obj_new_int(t.y),
+        mp_obj_new_bool(t.touched),
+    };
+    return mp_obj_new_tuple(3, tuple);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(moclcd_read_touch_obj, moclcd_read_touch);
+
 /* ---- module table ---- */
 static const mp_rom_map_elem_t moclcd_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__),   MP_ROM_QSTR(MP_QSTR_moclcd)          },
@@ -941,8 +1290,9 @@ static const mp_rom_map_elem_t moclcd_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_draw_rect),   MP_ROM_PTR(&moclcd_draw_rect_obj)   },
     { MP_ROM_QSTR(MP_QSTR_draw_circle), MP_ROM_PTR(&moclcd_draw_circle_obj) },
     { MP_ROM_QSTR(MP_QSTR_fill_circle), MP_ROM_PTR(&moclcd_fill_circle_obj) },
-    { MP_ROM_QSTR(MP_QSTR_draw_text8x8),MP_ROM_PTR(&moclcd_draw_text8x8_obj)},   // ADD THIS
-    { MP_ROM_QSTR(MP_QSTR_draw_bmp),    MP_ROM_PTR(&moclcd_draw_bmp_obj)    },   // ADD THIS
+    { MP_ROM_QSTR(MP_QSTR_draw_text8x8),MP_ROM_PTR(&moclcd_draw_text8x8_obj)},
+    { MP_ROM_QSTR(MP_QSTR_draw_bmp),    MP_ROM_PTR(&moclcd_draw_bmp_obj)    },
+    { MP_ROM_QSTR(MP_QSTR_read_touch),  MP_ROM_PTR(&moclcd_read_touch_obj)  },
 };
 static MP_DEFINE_CONST_DICT(moclcd_globals, moclcd_globals_table);
 

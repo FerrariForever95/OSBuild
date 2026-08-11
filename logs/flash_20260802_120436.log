@@ -1,0 +1,137 @@
+# ZENO OS Firmware Manager — Flash Log
+# Started  : 2026-08-02 06:34:36 UTC
+# Port     : /dev/ttyACM0
+# Baud     : 921600
+# Board    : ESP32_GENERIC_S3 (Shrike-Fi (ESP32-S3 + FPGA))
+# ────────────────────────────────────────────
+
+# Command: python3
+-m
+esptool
+--chip
+esp32s3
+-b
+921600
+--port
+/dev/ttyACM0
+write_flash
+--flash_mode
+dio
+--flash_size
+8MB
+--flash_freq
+80m
+0x0
+/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/bootloader/bootloader.bin
+0x8000
+/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/partition_table/partition-table.bin
+0x10000
+/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/micropython.bin
+
+esptool.py v4.12.0
+Serial port /dev/ttyACM0
+Connecting....
+Chip is ESP32-S3 (QFN56) (revision v0.2)
+Features: WiFi, BLE, Embedded Flash 8MB (XMC)
+Crystal is 40MHz
+MAC: ac:a7:04:03:f9:00
+Uploading stub...
+Running stub...
+Stub running...
+Changing baud rate to 921600
+Changed.
+Configuring flash size...
+Flash will be erased from 0x00000000 to 0x00004fff...
+Flash will be erased from 0x00008000 to 0x00008fff...
+Flash will be erased from 0x00010000 to 0x001bdfff...
+Flash params set to 0x023f
+SHA digest in image updated
+Compressed 19232 bytes to 12492...
+Writing at 0x00000000... (100 %)
+Wrote 19232 bytes (12492 compressed) at 0x00000000 in 0.3 seconds (effective 507.3 kbit/s)...
+Hash of data verified.
+Compressed 3072 bytes to 141...
+Writing at 0x00008000... (100 %)
+Wrote 3072 bytes (141 compressed) at 0x00008000 in 0.0 seconds (effective 750.1 kbit/s)...
+Hash of data verified.
+Compressed 1760176 bytes to 1177026...
+Writing at 0x00010000... (1 %)
+Writing at 0x000190f6... (2 %)
+Writing at 0x00025b61... (4 %)
+Writing at 0x00033ebf... (5 %)
+Writing at 0x0003b407... (6 %)
+Writing at 0x000417ec... (8 %)
+Writing at 0x0004854d... (9 %)
+Writing at 0x0004fa09... (11 %)
+Writing at 0x00058bd1... (12 %)
+Writing at 0x00063438... (13 %)
+Writing at 0x00069e0f... (15 %)
+Writing at 0x0006f6b5... (16 %)
+Writing at 0x00074973... (18 %)
+Writing at 0x00079d32... (19 %)
+Writing at 0x0007f164... (20 %)
+Writing at 0x00084722... (22 %)
+Writing at 0x00089cf1... (23 %)
+Writing at 0x0008ef0b... (25 %)
+Writing at 0x00094376... (26 %)
+Writing at 0x000994b8... (27 %)
+Writing at 0x0009e64d... (29 %)
+Writing at 0x000a3bdd... (30 %)
+Writing at 0x000a90bf... (31 %)
+Writing at 0x000add69... (33 %)
+Writing at 0x000b2c6c... (34 %)
+Writing at 0x000b7cfb... (36 %)
+Writing at 0x000bdc85... (37 %)
+Writing at 0x000c3908... (38 %)
+Writing at 0x000c8a96... (40 %)
+Writing at 0x000ce427... (41 %)
+Writing at 0x000d447d... (43 %)
+Writing at 0x000d9c07... (44 %)
+Writing at 0x000df771... (45 %)
+Writing at 0x000e50cd... (47 %)
+Writing at 0x000eaabe... (48 %)
+Writing at 0x000f037a... (50 %)
+Writing at 0x000f5720... (51 %)
+Writing at 0x000fb6f3... (52 %)
+Writing at 0x00101bc5... (54 %)
+Writing at 0x001079f1... (55 %)
+Writing at 0x0010d379... (56 %)
+Writing at 0x00112e56... (58 %)
+Writing at 0x00118a09... (59 %)
+Writing at 0x0011e798... (61 %)
+Writing at 0x001245c2... (62 %)
+Writing at 0x00129dd3... (63 %)
+Writing at 0x0012edee... (65 %)
+Writing at 0x00134295... (66 %)
+Writing at 0x00139900... (68 %)
+Writing at 0x0013ebde... (69 %)
+Writing at 0x0014485e... (70 %)
+Writing at 0x00149a66... (72 %)
+Writing at 0x0014eaf3... (73 %)
+Writing at 0x001540d6... (75 %)
+Writing at 0x00159861... (76 %)
+Writing at 0x0015ee03... (77 %)
+Writing at 0x001644c5... (79 %)
+Writing at 0x00169fcc... (80 %)
+Writing at 0x0016ff8f... (81 %)
+Writing at 0x00174f45... (83 %)
+Writing at 0x0017a098... (84 %)
+Writing at 0x0017f743... (86 %)
+Writing at 0x001850c3... (87 %)
+Writing at 0x0018ad9e... (88 %)
+Writing at 0x001909e6... (90 %)
+Writing at 0x001960f6... (91 %)
+Writing at 0x0019b31d... (93 %)
+Writing at 0x001a11b7... (94 %)
+Writing at 0x001a7300... (95 %)
+Writing at 0x001ac874... (97 %)
+Writing at 0x001b26c7... (98 %)
+Writing at 0x001b8745... (100 %)
+Wrote 1760176 bytes (1177026 compressed) at 0x00010000 in 14.5 seconds (effective 968.0 kbit/s)...
+Hash of data verified.
+
+Leaving...
+Hard resetting via RTS pin...
+
+# Flash finished: 2026-08-02 06:34:55 UTC
+# Exit code: 0
