@@ -1,0 +1,9 @@
+# ZENO OS Firmware Manager — Release & Git Log
+# Started : 2026-08-25 08:18:07 UTC
+# Label   : wakywokna
+# Commit  : Build: ESP32_GENERIC_S3 (2026-08-25 13:40)updated lcd
+# ────────────────────────────────────────────
+'/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/bootloader/bootloader.bin' -> '/home/shanmukh/OSBuild/firmware releases/ESP32_GENERIC_S3_wakywokna_20260825_134807_bootloader.bin'
+'/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/partition_table/partition-table.bin' -> '/home/shanmukh/OSBuild/firmware releases/ESP32_GENERIC_S3_wakywokna_20260825_134807_partition-table.bin'
+'/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/micropython.bin' -> '/home/shanmukh/OSBuild/firmware releases/ESP32_GENERIC_S3_wakywokna_20260825_134807_micropython.bin'
+[13:48:07] [INFO] Firmware binaries copied to: /home/shanmukh/OSBuild/firmware releases

@@ -147,8 +147,8 @@ list(APPEND MICROPY_SOURCE_PORT
     zfs_lfs.c
     modespnow.c
     modzfs.c
-#    modili9488.c
-#    ili9488.c
+#   modili9488.c
+#   ili9488.c
     modlcd.c
 )
 list(TRANSFORM MICROPY_SOURCE_PORT PREPEND ${MICROPY_PORT_DIR}/)
@@ -203,7 +203,7 @@ list(APPEND IDF_COMPONENTS
     vfs
 )
 
-if($ENV{IDF_VERSION} VERSION_GREATER_EQUAL "5.4")
+if("$ENV{IDF_VERSION}" VERSION_GREATER_EQUAL "5.4")
     list(APPEND IDF_COMPONENTS
         esp_driver_touch_sens)
 endif()
@@ -284,7 +284,7 @@ target_compile_options(${MICROPY_TARGET} PUBLIC
 )
 
 # User C modules don't pick up certain compile options set by the IDF, most
-# importantly the optimisation level.  So set them here.
+# importantly the optimisation level. So set them here.
 idf_build_get_property(idf_compile_options COMPILE_OPTIONS)
 target_compile_options(usermod INTERFACE ${idf_compile_options})
 
@@ -296,7 +296,7 @@ target_include_directories(${MICROPY_TARGET} PUBLIC
 # Add additional extmod and usermod components.
 if (MICROPY_PY_BTREE)
     target_link_libraries(${MICROPY_TARGET} $<TARGET_OBJECTS:micropy_extmod_btree>)
-    target_link_libraries(${MICROPY_TARGET} "-u abort_")  # micropy_extmod_btree links to this symbol found in MICROPY_TARGET
+    target_link_libraries(${MICROPY_TARGET} "-u abort_") # micropy_extmod_btree links to this symbol found in MICROPY_TARGET
 endif()
 target_link_libraries(${MICROPY_TARGET} usermod)
 

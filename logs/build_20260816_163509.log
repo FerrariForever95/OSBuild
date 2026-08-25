@@ -1,0 +1,36 @@
+# ZENO OS Firmware Manager — Incremental Build Log
+# Started  : 2026-08-16 11:05:09 UTC
+# Board    : ESP32_GENERIC_S3
+# IDF      : /home/shanmukh/esp/esp-idf
+# Type     : INCREMENTAL
+# ─────────────────────────────────────────────
+
+[16:35:09] [CMD] make BOARD=ESP32_GENERIC_S3
+Use make V=1 or set BUILD_VERBOSE in your environment to increase build verbosity.
+Executing action: all (aliases: build)
+Running ninja in directory /home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3
+Executing "ninja all"...
+[1/263] Performing build step for 'bootloader'
+[1/1] cd /home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/bootloader/esp-idf/esptool_py && /home/shanmukh/.espressif/python_env/idf5.5_py3.12_env/bin/python /home/shanmukh/esp/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/bootloader/bootloader.bin
+Bootloader binary size 0x4b20 bytes. 0x34e0 bytes (41%) free.
+[2/263] cd /home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/esp-idf/main && /usr/bin/cmake -E make_directory /home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/genhdr && /home/shanmukh/.espressif/python_env/idf5.5_py3.12_env/bin/python /home/shanmukh/OSBuild/py/makeversionhdr.py /home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/genhdr/mpversion.h
+[3/11] No install step for 'bootloader'
+[4/11] Completed 'bootloader'
+[5/11] cd /home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/esp-idf/main && /home/shanmukh/.espressif/python_env/idf5.5_py3.12_env/bin/python /home/shanmukh/OSBuild/tools/makemanifest.py -o /home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/frozen_content.c -v BOARD_DIR=/home/shanmukh/OSBuild/ports/esp32/boards/ESP32_GENERIC_S3 -v MPY_DIR=/home/shanmukh/OSBuild -v MPY_LIB_DIR=/home/shanmukh/OSBuild/lib/micropython-lib -v PORT_DIR=/home/shanmukh/OSBuild/ports/esp32 -b /home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3 -f-march=xtensawin --mpy-tool-flags= /home/shanmukh/OSBuild/ports/esp32/boards/manifest.py
+[6/6] cd /home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/esp-idf/esptool_py && /home/shanmukh/.espressif/python_env/idf5.5_py3.12_env/bin/python /home/shanmukh/esp/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/partition_table/partition-table.bin /home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/micropython.bin
+micropython.bin binary size 0x1a6740 bytes. Smallest app partition is 0x270000 bytes. 0xc98c0 bytes (32%) free.
+
+Project build complete. To flash, run:
+ idf.py flash
+or
+ idf.py -p PORT flash
+or
+ python -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 build-ESP32_GENERIC_S3/bootloader/bootloader.bin 0x8000 build-ESP32_GENERIC_S3/partition_table/partition-table.bin 0xd000 build-ESP32_GENERIC_S3/ota_data_initial.bin 0x10000 build-ESP32_GENERIC_S3/micropython.bin
+or from the "/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3" directory
+ python -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset write_flash "@flash_args"
+bootloader  @0x000000    19232  (   13536 remaining)
+partitions  @0x008000     3072  (    1024 remaining)
+application @0x010000  1730368  (  825536 remaining)
+total                  1795904
+
+# Finished: 2026-08-16 11:05:11 UTC  Duration: 2s  RC: 0
