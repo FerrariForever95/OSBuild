@@ -1,0 +1,10 @@
+# ZENO OS Firmware Manager — Release & Git Log
+# Started : 2026-08-25 08:34:04 UTC
+# Label   : releasekatesdirtysister
+# Folder  : /home/shanmukh/OSBuild/firmware releases/20260825_140404_releasekatesdirtysister_ESP32_GENERIC_S3
+# Commit  : Build: ESP32_GENERIC_S3 (2026-08-25 13:55) dirty partion
+# ────────────────────────────────────────────
+'/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/bootloader/bootloader.bin' -> '/home/shanmukh/OSBuild/firmware releases/20260825_140404_releasekatesdirtysister_ESP32_GENERIC_S3/bootloader.bin'
+'/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/partition_table/partition-table.bin' -> '/home/shanmukh/OSBuild/firmware releases/20260825_140404_releasekatesdirtysister_ESP32_GENERIC_S3/partition-table.bin'
+'/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/micropython.bin' -> '/home/shanmukh/OSBuild/firmware releases/20260825_140404_releasekatesdirtysister_ESP32_GENERIC_S3/micropython.bin'
+[14:04:04] [INFO] Firmware binaries copied to: /home/shanmukh/OSBuild/firmware releases/20260825_140404_releasekatesdirtysister_ESP32_GENERIC_S3

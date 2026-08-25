@@ -7,3 +7,116 @@
 '/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/partition_table/partition-table.bin' -> '/home/shanmukh/OSBuild/firmware releases/ESP32_GENERIC_S3_wakywokna_20260825_134807_partition-table.bin'
 '/home/shanmukh/OSBuild/ports/esp32/build-ESP32_GENERIC_S3/micropython.bin' -> '/home/shanmukh/OSBuild/firmware releases/ESP32_GENERIC_S3_wakywokna_20260825_134807_micropython.bin'
 [13:48:07] [INFO] Firmware binaries copied to: /home/shanmukh/OSBuild/firmware releases
+[13:48:07] [CMD] git add .
+[dev 5232128b5] Build: ESP32_GENERIC_S3 (2026-08-25 13:40)updated lcd
+ 108 files changed, 17834 insertions(+), 11750 deletions(-)
+ create mode 100755 builder/builder3.sh
+ create mode 100644 firmware releases/ESP32_GENERIC_S3_wakywokna_20260825_134807_bootloader.bin
+ create mode 100644 firmware releases/ESP32_GENERIC_S3_wakywokna_20260825_134807_micropython.bin
+ create mode 100644 firmware releases/ESP32_GENERIC_S3_wakywokna_20260825_134807_partition-table.bin
+ delete mode 100644 logs/build_20260803_185335.log
+ delete mode 100644 logs/build_20260805_111739.log
+ delete mode 100644 logs/build_20260805_114034.log
+ delete mode 100644 logs/build_20260806_202819.log
+ delete mode 100644 logs/build_20260807_190030.log
+ rename logs/{build_20260803_225214.log => build_20260811_225921.log} (85%)
+ rename logs/{build_20260807_203447.log => build_20260812_183358.log} (98%)
+ rename logs/{build_20260808_104054.log => build_20260812_185722.log} (98%)
+ create mode 100644 logs/build_20260812_204058.log
+ rename logs/{build_20260808_110113.log => build_20260812_205725.log} (98%)
+ rename logs/{build_20260808_120906.log => build_20260812_211048.log} (98%)
+ create mode 100644 logs/build_20260812_215923.log
+ rename logs/{build_20260805_193829.log => build_20260812_220111.log} (98%)
+ create mode 100644 logs/build_20260816_160034.log
+ rename logs/{build_20260806_214936.log => build_20260816_160805.log} (98%)
+ create mode 100644 logs/build_20260816_161457.log
+ rename logs/{build_20260806_213048.log => build_20260816_162555.log} (98%)
+ create mode 100644 logs/build_20260816_163509.log
+ rename logs/{build_20260807_190341.log => build_20260817_220220.log} (98%)
+ rename logs/{build_20260808_120359.log => build_20260818_131619.log} (98%)
+ create mode 100644 logs/build_20260822_091109.log
+ rename logs/{build_20260808_112555.log => build_20260822_091845.log} (99%)
+ rename logs/{build_20260807_202410.log => build_20260822_093523.log} (99%)
+ rename logs/{build_20260808_105532.log => build_20260822_132357.log} (87%)
+ rename logs/{build_20260806_220238.log => build_20260822_132756.log} (98%)
+ rename logs/{build_20260805_192211.log => build_20260825_134038.log} (98%)
+ delete mode 100644 logs/flash_20260727_202138.log
+ delete mode 100644 logs/flash_20260801_215037.log
+ delete mode 100644 logs/flash_20260802_114531.log
+ delete mode 100644 logs/flash_20260802_120436.log
+ delete mode 100644 logs/flash_20260802_140729.log
+ delete mode 100644 logs/flash_20260803_114002.log
+ delete mode 100644 logs/flash_20260803_185727.log
+ delete mode 100644 logs/flash_20260805_115559.log
+ delete mode 100644 logs/flash_20260805_192645.log
+ delete mode 100644 logs/flash_20260805_192711.log
+ create mode 100644 logs/flash_20260812_183900.log
+ create mode 100644 logs/flash_20260812_204741.log
+ create mode 100644 logs/flash_20260812_212007.log
+ create mode 100644 logs/flash_20260812_220627.log
+ create mode 100644 logs/flash_20260816_160537.log
+ create mode 100644 logs/flash_20260816_161239.log
+ create mode 100644 logs/flash_20260816_162058.log
+ rename logs/{flash_20260805_192657.log => flash_20260816_163530.log} (77%)
+ create mode 100644 logs/flash_20260816_163536.log
+ create mode 100644 logs/flash_20260822_094059.log
+ create mode 100644 logs/flash_20260822_142129.log
+ create mode 100644 logs/git_20260825_134807.log
+ delete mode 100644 logs/session_20260803_225140.log
+ delete mode 100644 logs/session_20260805_111716.log
+ delete mode 100644 logs/session_20260805_193444.log
+ delete mode 100644 logs/session_20260805_193823.log
+ delete mode 100644 logs/session_20260806_202633.log
+ delete mode 100644 logs/session_20260806_202810.log
+ delete mode 100644 logs/session_20260806_212431.log
+ delete mode 100644 logs/session_20260806_214728.log
+ delete mode 100644 logs/session_20260807_190017.log
+ delete mode 100644 logs/session_20260807_202000.log
+ delete mode 100644 logs/session_20260807_203413.log
+ delete mode 100644 logs/session_20260808_104048.log
+ delete mode 100644 logs/session_20260808_105517.log
+ delete mode 100644 logs/session_20260808_110108.log
+ delete mode 100644 logs/session_20260808_120347.log
+ delete mode 100644 logs/session_20260809_141601.log
+ rename logs/{session_20260805_192153.log => session_20260812_235529.log} (90%)
+ rename logs/{session_20260805_193245.log => session_20260814_153715.log} (90%)
+ rename logs/{session_20260805_114026.log => session_20260815_225110.log} (90%)
+ rename logs/{session_20260805_115545.log => session_20260815_225145.log} (90%)
+ create mode 100644 logs/session_20260816_155916.log
+ create mode 100644 logs/session_20260816_160636.log
+ create mode 100644 logs/session_20260816_161452.log
+ create mode 100644 logs/session_20260816_162529.log
+ create mode 100644 logs/session_20260817_220213.log
+ create mode 100644 logs/session_20260818_131553.log
+ create mode 100644 logs/session_20260822_090759.log
+ create mode 100644 logs/session_20260822_091104.log
+ create mode 100644 logs/session_20260822_091631.log
+ create mode 100644 logs/session_20260822_093501.log
+ create mode 100644 logs/session_20260822_094048.log
+ create mode 100644 logs/session_20260822_132123.log
+ create mode 100644 logs/session_20260822_132326.log
+ create mode 100644 logs/session_20260822_132748.log
+ create mode 100644 logs/session_20260824_191511.log
+ create mode 100644 logs/session_20260825_134001.log
+ create mode 100644 mpy-cross/Makefile
+ create mode 100644 mpy-cross/README.md
+ create mode 100644 mpy-cross/gccollect.c
+ create mode 100644 mpy-cross/main.c
+ create mode 100644 mpy-cross/mpconfigport.h
+ create mode 100644 mpy-cross/mphalport.h
+ create mode 100644 mpy-cross/mpy-cross.vcxproj
+ create mode 100644 mpy-cross/mpy_cross/__init__.py
+ create mode 100644 mpy-cross/mpy_cross/__main__.py
+ create mode 100644 mpy-cross/qstrdefsport.h
+ create mode 100644 ports/esp32/Changes.md
+ create mode 100644 ports/esp32/api.md
+ create mode 100644 ports/esp32/info.md
+ create mode 100644 ports/esp32/mds/Changes.md
+ create mode 100644 ports/esp32/mds/api.md
+ create mode 100644 ports/esp32/mds/esp32s3_n16r8.md
+ create mode 100644 ports/esp32/mds/info.md
+ create mode 100644 ports/esp32/modlcdstable.c
+[13:48:08] [INFO] Committed: Build: ESP32_GENERIC_S3 (2026-08-25 13:40)updated lcd
+To github.com:FerrariForever95/OSBuild.git
+   4987e76f9..5232128b5  dev -> dev
+[13:48:12] [INFO] Git push succeeded.
