@@ -1,227 +1,514 @@
-[![Unix CI badge](https://github.com/micropython/micropython/actions/workflows/ports_unix.yml/badge.svg)](https://github.com/micropython/micropython/actions?query=branch%3Amaster+event%3Apush) [![STM32 CI badge](https://github.com/micropython/micropython/actions/workflows/ports_stm32.yml/badge.svg)](https://github.com/micropython/micropython/actions?query=branch%3Amaster+event%3Apush) [![Docs CI badge](https://github.com/micropython/micropython/actions/workflows/docs.yml/badge.svg)](https://docs.micropython.org/) [![codecov](https://codecov.io/gh/micropython/micropython/branch/master/graph/badge.svg?token=I92PfD05sD)](https://codecov.io/gh/micropython/micropython)
+# Zeno OS
 
-The MicroPython project
-=======================
-<p align="center">
-  <img src="https://raw.githubusercontent.com/micropython/micropython/master/logo/upython-with-micro.jpg" alt="MicroPython Logo"/>
-</p>
+**A sandboxed, edge-computing operating system for constrained microcontroller platforms.**
 
-This is the MicroPython project, an implementation of Python 3.x for
-microcontrollers, embedded systems and other constrained platforms.
-You can find the official website at [micropython.org](http://www.micropython.org).
+Zeno OS is a solo research and engineering project exploring how far a general-purpose,
+multi-application OS experience — process-like isolation, a hierarchical filesystem, a
+POSIX-flavored shell, a graphical desktop, package management, and networked services —
+can be pushed onto a single System-on-Chip with kilobytes, not gigabytes, of usable RAM.
 
-MicroPython implements the entire Python 3.4 syntax (including exceptions,
-`with`, `yield from`, etc., and additionally `async`/`await` keywords from
-Python 3.5 and some select features from later versions). The following core
-datatypes are provided: `str`(including basic Unicode support), `bytes`,
-`bytearray`, `tuple`, `list`, `dict`, `set`, `frozenset`, `array.array`,
-`collections.namedtuple`, classes and instances. Builtin modules include
-`os`, `sys`, `time`, `re`, and `struct`, etc. Some ports have support for
-`_thread` module (multithreading), `socket` and `ssl` for networking, and
-`asyncio`. Note that only a subset of Python 3 functionality is implemented
-for the data types and modules.
+It currently targets the **Espressif ESP32-S3** (ESP32-S3-N16R8: dual-core Xtensa LX7,
+16 MB flash, 8 MB PSRAM) running a MicroPython execution core on top of ESP-IDF, driving
+an ILI9488/ILI9341-class parallel LCD panel with resistive/capacitive touch.
 
-MicroPython can execute scripts in textual source form (.py files) or from
-precompiled bytecode (.mpy files), in both cases either from an on-device
-filesystem or "frozen" into the MicroPython executable.
+Zeno OS was first presented publicly as *"Zeno OS: A Sandboxed Edge Computing Platform
+for ESP32"* at the Sri Chandrasekharendra Saraswathi Viswa Mahavidyalaya (SCSVMV)
+engineering symposium.
 
-MicroPython also provides a set of MicroPython-specific modules to access
-hardware-specific functionality and peripherals such as GPIO, Timers, ADC,
-DAC, PWM, SPI, I2C, CAN, Bluetooth, and USB.
+> **Author:** Marthi Venkata Shanmukha Viswanadh — Sole Architect & Developer
+> *Independent embedded systems research*
 
-Getting started
----------------
+---
 
-See the [online documentation](https://docs.micropython.org/) for the API
-reference and information about using MicroPython and information about how
-it is implemented.
+## Screenshots & Hardware
 
-We use [GitHub Discussions](https://github.com/micropython/micropython/discussions)
-as our forum, and [Discord](https://discord.gg/RB8HZSAExQ) for chat. These
-are great places to ask questions and advice from the community or to discuss your
-MicroPython-based projects.
+| | |
+|---|---|
+| ![Zeno OS Home screen](Images/home-screen.jpg) | ![GFX Test Suite](Images/gfx-test-suite.jpg) |
+| Home screen — app grid, taskbar clock, and wallpaper rendered on the ILI9488-class reference panel (480×320, landscape). | The `Graphics.py` widget toolkit exercised by a test screen: buttons, status dots, sliders, a toggle switch, a progress bar, and an `IOSSlider`-style draggable knob. |
+| ![ESP32-S3 carrier boards](Images/carrier-boards.jpg) | ![Carrier board close-up](Images/carrier-board-closeup.jpg) |
+| Two generations of the ESP32-S3-N16R8 reference carrier board used for development, wired to the LCD/touch/SD header breakout. | Close-up of the carrier board: ESP32-S3-N16R8 module, RGB status LED, boot/reset buttons, and the LCD/SD ribbon header. |
 
-For bugs and feature requests, please [raise an issue](https://github.com/micropython/micropython/issues/new/choose)
-and follow the templates there.
+---
 
-For information about the [MicroPython pyboard](https://store.micropython.org/pyb-features),
-the officially supported board from the
-[original Kickstarter campaign](https://www.kickstarter.com/projects/214379695/micro-python-python-for-microcontrollers),
-see the [schematics and pinouts](http://github.com/micropython/pyboard) and
-[documentation](https://docs.micropython.org/en/latest/pyboard/quickref.html).
+## Table of Contents
 
-MicroPython design values
--------------------------
+1. [Design Philosophy](#design-philosophy)
+2. [System Layering](#system-layering)
+3. [Boot Process](#boot-process)
+4. [Kernel Organization & Scheduling](#kernel-organization--scheduling)
+5. [OS Services Subsystem](#os-services-subsystem)
+6. [Storage Architecture](#storage-architecture)
+7. [Graphics & Display Subsystem](#graphics--display-subsystem)
+8. [Shell and Command Interface](#shell-and-command-interface)
+9. [Application Layer & Sandboxing](#application-layer--sandboxing)
+10. [Resilience and Fault Isolation](#resilience-and-fault-isolation)
+11. [The SCPU/GCPU Dual-Domain Architecture (Roadmap)](#the-scpugcpu-dual-domain-architecture-roadmap)
+12. [Repository Structure](#repository-structure)
+13. [Development Workflow & Helper Scripts](#development-workflow--helper-scripts)
+14. [Hardware Reference Platform](#hardware-reference-platform)
+15. [References](#references)
 
-"Perfection is achieved, not when there is nothing more to add, but when there
-is nothing left to take away." ―- Antoine de Saint-Exupéry.
+---
 
-For its design and implementation, MicroPython aims to follow a set of values.
-Although not a strict set of rules, these values and principles serve as a
-useful guide for new and seasoned contributors, as well as maintainers.
+## Design Philosophy
 
-MicroPython is at heart a combination of "Micro" and "Python": it's about
-resource constrained systems running the Python programming language.  Both of
-these concepts balance off against each other in all parts of MicroPython's
-design and implementation.
+Four principles govern every architectural decision in Zeno OS:
 
-The key concepts that focus the development of MicroPython are:
-- Minimalism: do lots with little.
-- Efficiency: engineering, build, execution, storage, power consumption.
-- Consistency: the whole system feels like it was designed at once.
+1. **Fail-safe, layered boot.** The system never assumes its own previous boot succeeded
+   cleanly. Multiple boot entry points exist precisely so that a corrupted or
+   partially-written OS can still reach an interactive or recoverable state.
+2. **Capability-gated authorization.** Privileged kernel code paths are only permitted to
+   run once a single-use capability token has been minted and consumed, closing the door
+   on stale or replayed boot state persisting across resets.
+3. **Separation of logic from presentation.** System logic (scheduling, storage,
+   networking, package management) is architecturally distinct from rendering and display
+   composition — informal today, and being formalized into two dedicated execution domains
+   (see [SCPU/GCPU](#the-scpugcpu-dual-domain-architecture-roadmap)).
+4. **Disposable application execution.** Applications are not long-lived, kernel-tracked
+   processes; they run inside a throwaway namespace that is unconditionally cleaned up, and
+   their failure is always contained.
 
-When using MicroPython, the Python language is used as the human interface to a
-system, giving fine control over the entities attached to that system.
-In a hardware setting, MicroPython aims to give the user a bare-metal feeling:
-one should feel like they have complete control over the system, with very
-little between the programmer and the physical world.
+These principles trade raw throughput for predictability and resilience — an appropriate
+trade on a platform where a hard fault means a physical device is unusable until reflashed.
 
-MicroPython recognises that systems can be very complex.  The existing Python
-libraries in combination with the MicroPython-specific libraries provide a
-user-friendly way to harness the complexity of a system.
+---
 
-Python language compatibility is very important to MicroPython, and at first
-glance MicroPython should look just like regular Python.  In the first instance,
-most Python scripts should run unchanged on MicroPython, even on devices with very
-tight resources.  Beyond that, there are ways to extend MicroPython if needed to
-better match Python.  The provided built-in modules are an efficient subset of
-the corresponding Python ones, without duplication of functionality, and allow
-extension in Python if needed.
+## System Layering
 
-Contributing
-------------
+Zeno OS is organized as a strict layered stack. Each layer only depends on the layer
+directly beneath it; no layer reaches upward.
 
-MicroPython is an open-source project and welcomes contributions. To be
-productive, please be sure to follow the
-[Contributors' Guidelines](https://github.com/micropython/micropython/wiki/ContributorGuidelines)
-and the [Code Conventions](https://github.com/micropython/micropython/blob/master/CODECONVENTIONS.md).
-Note that MicroPython is licenced under the MIT license, and all contributions
-should follow this license.
+```
+L6 — Applications (Home/APPS/*)
+L5 — Shell / Interactive Layer (ZenCMD)
+L4 — OS Services Layer (Services.py)
+L3 — Kernel & Capability Layer
+L2 — MicroPython VM + Native Extensions
+L1 — ESP-IDF / FreeRTOS
+L0 — Hardware (ESP32-S3, LCD, SD, RTC, radio)
+```
 
-About this repository
----------------------
+- **L0/L1 — Hardware and vendor SDK.** ESP-IDF v5.5.x and FreeRTOS provide partitioning,
+  low-level drivers (`esp_lcd` panel-IO, LEDC PWM, SPI/I2C, Wi-Fi/BT radio stacks), and the
+  RTOS scheduler beneath MicroPython.
+- **L2 — MicroPython VM and native extensions.** Two purpose-built native (C) MicroPython
+  modules form the performance-critical boundary of the OS: `moclcd` (graphics/display
+  driver) and the private `zfs` filesystem driver.
+- **L3 — Kernel and capability layer.** Selects and executes one of several boot entry
+  points and mints the single-use authorization capability consumed by the rest of boot.
+- **L4 — OS Services.** The bulk of system logic: process/scheduling primitives, storage,
+  networking, package/application management, diagnostics.
+- **L5 — Shell.** `ZenCMD`, the interactive command interpreter.
+- **L6 — Applications.** User-facing programs launched into disposable execution contexts.
 
-This repository contains the following components:
-- [py/](py/) -- the core Python implementation, including compiler, runtime, and
-  core library.
-- [mpy-cross/](mpy-cross/) -- the MicroPython cross-compiler which is used to turn scripts
-  into precompiled bytecode.
-- [ports/](ports/) -- platform-specific code for the various ports and architectures that MicroPython runs on.
-- [lib/](lib/) -- submodules for external dependencies.
-- [tests/](tests/) -- test framework and test scripts.
-- [docs/](docs/) -- user documentation in Sphinx reStructuredText format. This is used to generate the [online documentation](http://docs.micropython.org).
-- [extmod/](extmod/) -- additional (non-core) modules implemented in C.
-- [tools/](tools/) -- various tools, including the pyboard.py module.
-- [examples/](examples/) -- a few example Python scripts.
+---
 
-"make" is used to build the components, or "gmake" on BSD-based systems.
-You will also need bash, gcc, and Python 3.3+ available as the command `python3`.
-Some ports (rp2 and esp32) additionally use CMake.
+## Boot Process
 
-Supported platforms & architectures
------------------------------------
+Zeno OS boots through one of several distinct entry points, selected by a boot flag rather
+than a single fixed code path — a deliberate resilience decision so the device always has
+a route back to an interactive or repairable state.
 
-MicroPython runs on a wide range of microcontrollers, as well as on Unix-like
-(including Linux, BSD, macOS, WSL) and Windows systems.
+```
+Power-on / Reset
+   │
+ESP-IDF init, partition table & mount
+   │
+Boot flag decision (kernel.c, undisclosed)
+   │
+kernel.c (default) | kernel.py | safe.py | recovery.py
+   │
+Mint & consume boot_cap capability
+   │
+Load Services.py (graceful degradation on failure)
+   │
+Attach ZenCMD shell
+   │
+Launch Home UI
+```
 
-Microcontroller targets can be as small as 256kiB flash + 16kiB RAM, although
-devices with at least 512kiB flash + 128kiB RAM allow a much more
-full-featured experience.
+### Boot Flags
 
-The [Unix](ports/unix) and [Windows](ports/windows) ports allow both
-development and testing of MicroPython itself, as well as providing
-lightweight alternative to CPython on these platforms (in particular on
-embedded Linux systems).
+| Flag | Role |
+|---|---|
+| `kernel.c` *(default, undisclosed)* | The compiled, non-Python kernel entry point that boots the system under normal operating conditions. Its internal control flow, initialization order, and capability-minting logic are proprietary and not described publicly. |
+| `kernel.py` | A Python-level boot flag used to bring the system up while exercising the scheduler and UI stack directly against `Graphics.py`. Performs the same capability check as the native kernel and hosts the cooperative `Task`/scheduler primitives. |
+| `safe.py` | A minimal, safe-mode boot flag. Brings up only the UI module, task manager, CPU accounting object, and network object against the compiled firmware extension module, exposing a sandboxed `launch_app()` entry point. Used when the normal boot path fails but the compiled firmware core is intact. |
+| `recovery.py` / **Recovery flag** | A standalone, dependency-free path that imports nothing from `Services`, so it remains usable even if `Services.py` or `zeno.py` are missing or corrupted. One of several resilience mechanisms in the system, not the primary recovery story on its own. |
 
-Over twenty different MicroPython ports are provided in this repository,
-split across three
-[MicroPython Support Tiers](https://docs.micropython.org/en/latest/develop/support_tiers.html).
+### Capability-Gated Authorization
 
-Tier 1 Ports
-============
+Every Python-level boot flag performs the same check before proceeding: it reads a boot
+capability token (`zeno.boot_cap`), verifies it is a non-zero integer minted for this boot
+cycle, and immediately nulls it out (`zeno.boot_cap = None`) so it cannot be reused. Only
+after this check does it set `zeno.authorized = True`. This capability is a fresh 32-bit
+value drawn from `urandom` each time `zeno.py` is (re)written — it is not a static secret
+and is not portable across boot cycles.
 
-👑 Ports in [Tier 1](https://docs.micropython.org/en/latest/develop/support_tiers.html)
-are mature and have the most active development, support and testing:
+### Graceful Service Degradation
 
-| Port                     | Target                                                                                 | Quick Reference                                                      |
-|--------------------------|----------------------------------------------------------------------------------------|----------------------------------------------------------------------|
-| [esp32](ports/esp32)*    | Espressif ESP32 SoCs (ESP32, ESP32S2, ESP32S3, ESP32C3, ESP32C6)                       | [here](https://docs.micropython.org/en/latest/esp32/quickref.html)   |
-| [mimxrt](ports/mimxrt)   | NXP m.iMX RT                                                                           | [here](https://docs.micropython.org/en/latest/mimxrt/quickref.html)  |
-| [rp2](ports/rp2)         | Raspberry Pi RP2040 and RP2350                                                         | [here](https://docs.micropython.org/en/latest/rp2/quickref.html)     |
-| [samd](ports/samd)       | Microchip (formerly Atmel) SAMD21 and SAMD51                                           | [here](https://docs.micropython.org/en/latest/samd/quickref.html)    |
-| [stm32](ports/stm32)     | STMicroelectronics STM32 MCUs (F0, F4, F7, G0, G4, H5, H7, L0, L1, L4, N6, WB, WL)     | [here](https://docs.micropython.org/en/latest/pyboard/quickref.html) |
-| [unix](ports/unix)       | Linux, BSD, macOS, WSL                                                                 | [here](https://docs.micropython.org/en/latest/unix/quickref.html)    |
-| [windows](ports/windows) | Microsoft Windows                                                                      | [here](https://docs.micropython.org/en/latest/unix/quickref.html)    |
+After a boot flag has run, `ZenCMD` attempts to import `Services` and `zeno` through a
+re-import helper that first evicts any stale cached module, so files recently repaired by
+recovery are actually picked up. If `Services` fails to import, every command that depends
+on it is disabled rather than crashing the shell: a `_NullLogger` and `_FallbackZeno` stand
+in for the missing objects, and the shell prints an explicit notice that the device is
+running in a degraded mode, with `recover` offered as the way out. This pattern — *attempt,
+degrade, offer a documented recovery path* — recurs throughout Zeno OS as a system-wide
+property (see [Resilience and Fault Isolation](#resilience-and-fault-isolation)).
 
-An asterisk indicates that the port has ongoing financial support from the vendor.
+---
 
-Tier 2 Ports
-============
+## Kernel Organization & Scheduling
 
-✔ Ports in [Tier 2](https://docs.micropython.org/en/latest/develop/support_tiers.html)
-are less mature and less actively developed and tested than Tier 1, but
-still fully supported:
+The Python-level kernel flag (`kernel.py`) hosts Zeno OS's cooperative task scheduling
+primitives. Because MicroPython on this target runs as a single-threaded VM, Zeno OS does
+not attempt preemptive multitasking at the Python level; instead it schedules cooperatively
+against a fixed frame budget, in the same spirit as a fixed-timestep game loop.
 
-| Port                             | Target                                                      | Quick Reference                                                         |
-|----------------------------------|-------------------------------------------------------------|-------------------------------------------------------------------------|
-| [alif](ports/alif)               | Alif Semiconductor Ensemble MCUs (E3, E7)                   |                                                                         |
-| [embed](ports/embed)             | Generates a set of .c/.h files for embedding into a project |                                                                         |
-| [nrf](ports/nrf)                 | Nordic Semiconductor nRF51 and nRF52                        |                                                                         |
-| [renesas-ra](ports/renesas-ra)   | Renesas RA family                                           | [here](https://docs.micropython.org/en/latest/renesas-ra/quickref.html) |
-| [webassembly](ports/webassembly) | Emscripten port targeting browsers and NodeJS               |                                                                         |
-| [zephyr](ports/zephyr)           | Zephyr RTOS                                                 | [here](https://docs.micropython.org/en/latest/zephyr/quickref.html)     |
+### Task Model
 
-Tier 3 Ports
-============
+Each schedulable unit of work is a `Task` object with a fixed `__slots__` layout (`name`,
+`func`, `mode`, `period`, `done`, `expected_us`, `meta`). The `meta` dictionary tracks an
+exponentially-weighted moving average (α = 0.3) of observed execution time, sample count,
+and observed min/max execution time in microseconds:
 
-Ports in [Tier 3](https://docs.micropython.org/en/latest/develop/support_tiers.html)
-are built in CI but not regularly tested by the MicroPython maintainers:
+```
+t̄ₙ = α · tₙ + (1 − α) · t̄ₙ₋₁
+```
 
-| Port                       | Target                                                            | Quick Reference                                                         |
-|----------------------------|-------------------------------------------------------------------|-------------------------------------------------------------------------|
-| [cc3200](ports/cc3200)     | Texas Instruments CC3200                                          | [For WiPy](https://docs.micropython.org/en/latest/wipy/quickref.html)   |
-| [esp8266](ports/esp8266)   | Espressif ESP8266 SoC                                             | [here](https://docs.micropython.org/en/latest/esp8266/quickref.html)    |
-| [pic16bit](ports/pic16bit) | Microchip PIC 16-bit                                              |                                                                         |
-| [powerpc](ports/powerpc)   | IBM PowerPC (including Microwatt)                                 |                                                                         |
+This running estimate lets the scheduler reason about whether a task will fit inside the
+remaining frame budget *before* running it. The frame budget is fixed at `FRAME_MS = 16`
+(a nominal 60 Hz cadence), with per-task execution time clamped between `MIN_US = 1000`
+and `MAX_US = 500,000` to prevent a single misbehaving task from starving the frame.
+Scheduler state is persisted to `/LOGS/task_state.json` so timing estimates survive a
+reboot instead of re-learning from a cold start every time.
 
-Additional Ports
-================
+### Process Abstraction and CPU Accounting
 
-In addition to the above there is a Tier M containing ports that are used
-primarily for maintenance, development and testing:
+The OS Services layer complements the kernel-level task scheduler with a heavier process
+abstraction (`Process`, `ProcessError`, `PermissionDenied`, `Scheduler`) and privilege
+enforcement (`SystemPrivilege`). Because MicroPython does not natively provide several
+CPython exception types used for permission and filesystem semantics, Zeno OS defines
+compatible shims (`PermissionError`, `FileNotFoundError`, `FileExistsError`,
+`NotADirectoryError`).
 
-- The ["bare-arm"](ports/bare-arm) port is an example of the absolute minimum
-  configuration that still includes the compiler, and is used to keep track
-  of the code size of the core runtime and VM.
+A lightweight `CPU` object reports coarse utilization from busy/idle microsecond counters
+supplied by the scheduler (`usage% = ⌊100 · busy/(busy + idle)⌋`, using integer math to
+avoid floating-point overhead), and exposes `reboot()` as the single authoritative path to
+`machine.reset()`.
 
-- The ["minimal"](ports/minimal) port provides an example of a very basic
-  MicroPython port and can be compiled as both a standalone Linux binary as
-  well as for ARM Cortex-M4. Start with this if you want to port MicroPython
-  to another microcontroller.
+### Power Management
 
-- The [qemu](ports/qemu) port is a QEMU-based emulated target for Cortex-A,
-  Cortex-M, RISC-V 32-bit and RISC-V 64-bit architectures.
+A dedicated `PowerManagement` service manages CPU frequency scaling through
+`machine.freq()`. It defines named frequency tiers (`low`/`normal`/`high`/`turbo`) per
+platform, falling back to a single-level table built from the frequency observed at boot
+on unrecognized platforms. Rather than measuring load itself, it exposes a boost/release
+request model keyed by caller-supplied reason strings (e.g. a package download requesting
+`high` until it completes), so callers explicitly request the performance they need and
+the highest currently-requested tier wins.
 
-The MicroPython cross-compiler, mpy-cross
------------------------------------------
+---
 
-Most ports require the [MicroPython cross-compiler](mpy-cross) to be built
-first.  This program, called mpy-cross, is used to pre-compile Python scripts
-to .mpy files which can then be included (frozen) into the
-firmware/executable for a port.  To build mpy-cross use:
+## OS Services Subsystem
 
-    $ cd mpy-cross
-    $ make
+The OS Services layer is the largest single body of system logic in Zeno OS. It is
+deliberately organized as a **flat collection of focused classes** rather than a single
+monolithic manager, so that any one service can fail or be reloaded independently.
 
-External dependencies
----------------------
+| Cluster | Services |
+|---|---|
+| Identity & Security | `SystemPrivilege`, `usermanager`, CPython-compatible exception shims |
+| Storage & Filesystem | `Disk`, `FileManager`, `BootConfig` |
+| Process & Scheduling | `Process`, `Scheduler`, `system`, `CPU`, `PowerManagement` |
+| Networking & Connectivity | `Network`, `downloadhelper`, `Git`, `BluetoothManager`, `IoTManager`, `Device` |
+| Software Management | `AppInstaller`, `AppDB`, `PackageManager`, `Wiki` |
+| Diagnostics | `Logger` |
 
-The core MicroPython VM and runtime has no external dependencies, but a given
-port might depend on third-party drivers or vendor HALs. This repository
-includes [several submodules](lib/) linking to these external dependencies.
-Before compiling a given port, use
+Services do not call one another directly through hard imports where it can be avoided;
+instead, the shell layer holds references to each service object and mediates access, and
+each service exposes a uniform `help()` method describing the commands it answers to. This
+keeps individual services independently testable and independently reloadable (`reload` /
+`reloadmodule` shell commands) without requiring a full device reboot.
 
-    $ cd ports/name
-    $ make submodules
+`AppDB` and `AppInstaller` maintain the registry of installed applications (backed by
+`/APPS/Data/appdb.json`); `PackageManager` and the `ZenStore` application build on top of
+this registry and the networking cluster to fetch and install packages — one service among
+peers, with no special authority over boot, scheduling, or storage.
 
-to ensure that all required submodules are initialised.
+---
+
+## Storage Architecture
+
+Zeno OS exposes **two architecturally distinct storage tiers**:
+
+```
+User-visible VFS (flash + SD card)  ──  FileManager / Disk  ──  os.listdir() / open()
+Private zfs (LittleFS2, mutex-guarded) ──  import zfs (native)  ──  never in VFS namespace
+```
+
+### User-Visible Filesystem
+
+The standard MicroPython VFS, backed by internal flash and an optional SD card, is
+mediated by the `Disk` and `FileManager` services. This is the filesystem the shell,
+application layer, and package manager operate against: the `/Home` tree, installed
+applications, logs, and downloaded packages all live here and are visible to
+`os.listdir()`/`open()` in the ordinary way. The reference platform wires the SD card over
+SPI (`SCK = 40`, `MOSI = 6`, `MISO = 5`, `CS = 7`).
+
+### Private Kernel Filesystem (`zfs`)
+
+A second, private storage tier — internally named `zfs`, backed by LittleFS2 on a
+dedicated flash partition — exists exclusively for OS-internal kernel state. It is never
+mounted into the MicroPython VFS and is never visible through `os.listdir()` or `open()`;
+it is reachable only via a dedicated native module (`import zfs`), which calls into a C
+implementation (`zfs_lfs.c`) guarded by a FreeRTOS mutex around every operation. This
+separation exists so that OS-internal state cannot be casually inspected, corrupted, or
+shadowed by user-space file operations sharing the same path namespace as application data.
+Per-file cache buffers are sized to the flash erase granularity (4 KB blocks, 256 B
+program/read size), consistent with LittleFS2's requirement for wear-aware,
+power-loss-resilient writes on raw NOR/NAND flash.
+
+---
+
+## Graphics & Display Subsystem
+
+The current rendering path — running in production today, prior to completion of the
+GCPU migration — consists of a Python widget toolkit (`Graphics.py`) built directly on top
+of a native display driver module (`moclcd`).
+
+### Native Display Driver (`moclcd`)
+
+`moclcd` is a MicroPython C extension built on ESP-IDF's `esp_lcd` i80 (8080-style)
+parallel panel-IO driver. It drives an ILI9488/ILI9341-class controller over an 8-bit
+parallel bus (control lines RST/RS/WR/RD plus an 8-bit data bus and a PWM-driven backlight),
+supporting both landscape (480×320) and portrait (320×480) orientation via a single
+`madctl` parameter. Fill and blit operations stream through a DMA-capable buffer
+(`heap_caps_malloc` with `MALLOC_CAP_DMA`) with a transaction queue depth of 10, allowing
+several chunks of a frame to be in flight on the DMA engine at once rather than stalling
+the CPU on each line. Text rendering reuses MicroPython's own 8×8 font table natively in
+C, including a transparent-background mode that only touches foreground pixels.
+
+### Widget Toolkit (`Graphics.py`)
+
+`Graphics.py` is a thin, function-level pass-through onto `moclcd` rather than a
+re-implementation: `draw_text8x8()` and `draw_bmp()` call directly into the native driver
+instead of building an intermediate framebuffer in Python. On top of these primitives it
+implements a conventional retained-mode widget set — `UIScreen`, `UIButton`, `UIText`,
+`DialogBox`, `UIToggleSwitch`, `UISlider`, `UIListView`, `UITabBar`, `UICheckBox`,
+`UIRadioGroup`, `VirtualKeyboard`, and screen-transition animators, roughly thirty widget
+classes in total — decoupled from any specific touch driver through a single
+`set_touch_handler(fn)` indirection point.
+
+### Present-Day Inter-Subsystem Communication
+
+In the current, single-process MicroPython architecture, subsystems communicate through a
+shared module-level state object (`zeno`), which exposes a small set of well-known
+attributes (`ui`, `tsk`, `log`, `net`, `usr`, `fm`, plus boot/authorization state). This is
+an appropriate pattern for a single address space with no true concurrency, but it does not
+scale to a design where rendering and system logic run as separated execution domains —
+the motivation for the architecture described next.
+
+---
+
+## Shell and Command Interface
+
+`ZenCMD` is the interactive command interpreter that sits at the top of the Python-level
+stack, mediating access to every OS service. It implements a POSIX-flavored command
+surface with statement separation (`;`), pipelines (`|`) with an output-capture object
+standing in for each intermediate stage, environment variables/aliases, and command
+history. A privilege model (`super`/`unsuper`) gates destructive or system-level commands,
+and the interactive prompt reflects the current privilege state.
+
+| Category | Representative commands |
+|---|---|
+| Filesystem | `ls`, `cd`, `mkdir`, `rmdir`, `rm`, `cp`, `mv`, `touch`, `cat`, `head`, `tail`, `find`, `which`, `stat`, `file` |
+| Session & shell | `echo`, `env`, `export`, `alias`, `history`, `whoami`, `id`, `hostname` |
+| System info | `version`, `uptime`, `date`, `time`, `df`, `du`, `free` |
+| Process & service | `ps`, `kill`, `jobs`, `service`, `reload`, `reloadmodule` |
+| Storage mount | `mount`, `mountzfs`, `sync` |
+| Privilege & power | `super`, `unsuper`, `passwd`, `shutdown`, `reboot` |
+| Diagnostics & recovery | `bootlog`, `log`, `recover` |
+
+---
+
+## Application Layer & Sandboxing
+
+Applications live under `/Home/APPS` (e.g. `Browser`, `Files`, `Paint`, `Settings`,
+`ZenStore`), registered through `AppDB` against `/APPS/Data/appdb.json` and installed
+through `AppInstaller`/`PackageManager`.
+
+Applications are **not** persistent, kernel-tracked processes. Launching an application
+(`launch_app(name)`) reads the application's source file and executes it into a fresh,
+throwaway globals dictionary rather than importing it as a module:
+
+```python
+# Disposable application execution (simplified from safe.py)
+def launch_app(app_name):
+    path = "/SYSTEM32/APPS/{}.py".format(app_name)
+    gc.collect()
+    app_globals = {"__name__": "__main__"}
+    try:
+        with open(path, "r") as f:
+            exec(f.read(), app_globals)
+    except Exception as e:
+        # captured and logged, never silently swallowed
+        ...
+    finally:
+        app_globals.clear()
+        del app_globals
+        gc.collect()
+    raise SystemExit
+```
+
+Any exception raised by the application is caught, formatted, and logged rather than
+propagated — so a defective application cannot bring down the shell or the boot session
+that launched it. The `finally` block unconditionally clears the application's namespace
+and forces a garbage collection pass regardless of whether the application succeeded,
+failed, or exited normally, which matters on a platform where a leaked reference can
+exhaust available RAM within a single session.
+
+---
+
+## Resilience and Fault Isolation
+
+Resilience in Zeno OS is not the property of any single module; it is a pattern applied
+consistently across layers:
+
+- The **boot layer** offers multiple entry points rather than a single point of failure.
+- The **shell** degrades gracefully rather than failing to start when `Services` cannot be
+  loaded.
+- The **application layer** contains failures inside a disposable namespace rather than
+  letting them escape into shell or kernel state.
+- A **standalone recovery utility** can rebuild the minimal set of core files needed to
+  reach a working shell, independent of every other service, as a last-resort path when the
+  above layers are themselves compromised.
+
+---
+
+## The SCPU/GCPU Dual-Domain Architecture (Roadmap)
+
+Zeno OS is transitioning to a new internal architecture organized around two dedicated
+**execution domains**: the **System CPU (SCPU)** domain and the **Graphics CPU (GCPU)**
+domain.
+
+```
+┌────────────────────┐        Internal IPC        ┌────────────────────┐
+│    SCPU domain     │   (proprietary — undisclosed) │    GCPU domain     │
+│ Scheduling          │◄──────────────────────────►│ Rendering           │
+│ Application mgmt.   │      bidirectional channel   │ Display composition │
+│ Storage             │                              │ GUI rendering       │
+│ Networking          │                              │ Graphics accel.     │
+│ System logic        │                              │ Display mgmt.       │
+└────────────────────┘                              └────────────────────┘
+```
+
+- **SCPU (System CPU)** owns all operating-system services: scheduling, application
+  lifecycle management, storage, networking, IPC, and system logic generally — the
+  architectural successor to the [OS Services](#os-services-subsystem) layer.
+- **GCPU (Graphics CPU)** owns graphics rendering exclusively: display composition, GUI
+  rendering, graphics acceleration, and display management — the architectural successor
+  to the [rendering path](#graphics--display-subsystem) described above.
+
+> **SCPU and GCPU are logical architectural domains, not separate physical processors.**
+> They describe a separation of responsibility within the system, not a statement about
+> silicon topology.
+
+**Scope note:** the SCPU/GCPU codebase is proprietary and under active development. The
+internal IPC protocol, message framing, synchronization primitives, cross-boundary
+scheduling strategy, and the rendering pipeline internal to GCPU are intentionally not
+disclosed here or in any companion document.
+
+---
+
+## Repository Structure
+
+The Zeno OS project is divided across multiple independently developed and independently
+versioned repositories, mirroring the domain separation above:
+
+- **System repository** — SCPU-domain OS logic: services, kernel/boot flags, storage,
+  networking, shell.
+- **Graphics repository** — GCPU-domain rendering logic and the native display driver
+  boundary.
+- **Additional supporting repositories** — auxiliary tooling and reference material that
+  does not belong inside either domain repository.
+
+Splitting the project this way improves modularity, maintainability, and long-term
+scalability: each repository can evolve, be reviewed, and be released on its own cadence
+without forcing a lock-step release of the entire system.
+
+---
+
+## Development Workflow & Helper Scripts
+
+A set of shell scripts and utilities support the development, compilation, testing,
+packaging, and flashing of Zeno OS. **These are development-time helper scripts and are
+explicitly not part of the operating system architecture** — they do not run on the
+device as part of Zeno OS, are not loaded by any boot flag, and are not addressable from
+the shell or any OS service.
+
+- **Build automation** — cross-compilation driver scripts that invoke the
+  MicroPython/ESP-IDF toolchain (menuconfig automation, board variant selection, firmware
+  image assembly).
+- **Flashing utilities** — scripts that invoke `esptool`-style flashing against the target
+  board's serial/USB interface.
+- **Directory/staging management** — utilities that assemble the on-device filesystem
+  image from the source tree ahead of flashing.
+- **Device-side patch agent** (`zenpath.py`) — a small serial-protocol listener that
+  applies line-based patches to files already on the device during iterative development,
+  so a developer can push a targeted fix without reflashing the full image. This is a
+  development bridge tool, not a general-purpose runtime IPC mechanism.
+
+---
+
+## Hardware Reference Platform
+
+The reference platform for Zeno OS is an **ESP32-S3-N16R8** module (dual-core Xtensa LX7,
+16 MB flash, 8 MB PSRAM, integrated Wi-Fi/Bluetooth radio) paired with an
+ILI9488/ILI9341-class 8080-parallel LCD panel and resistive/capacitive touch input.
+
+| Signal | GPIO | Signal | GPIO |
+|---|---|---|---|
+| RST | 12 | BL (backlight) | 38 |
+| RS / DC | 13 | SD_SCK | 40 |
+| WR | 14 | SD_MOSI | 6 |
+| RD | 41 | SD_MISO | 5 |
+| D0–D7 | 16, 15, 11, 10, 9, 4, 18, 17 | SD_CS | 7 |
+
+Keeping the LCD panel and its header pinout constant across carrier-board revisions is
+what allows a single native driver module (`moclcd`) to serve multiple hardware
+generations without a compatibility layer.
+
+---
+
+## Conclusion & Roadmap
+
+Zeno OS is architected as a layered, fail-safe system: a capability-gated boot sequence
+that can fall back through multiple entry points, a services layer organized as
+independently reloadable peers rather than a single privileged manager, a two-tier
+storage model that keeps kernel state out of the user-visible filesystem, and an
+application model in which every launched program runs inside a disposable, cleaned-up
+execution context.
+
+The project's near-term roadmap is the formalization of this architecture's implicit
+logic/rendering separation into two dedicated execution domains — **SCPU** and **GCPU** —
+communicating over an internal IPC mechanism. Consistent with the project's current stage
+of development, this document has intentionally stopped short of describing the internal
+protocol, scheduling strategy, or rendering pipeline that will connect those two domains,
+as that work is proprietary and still under active development.
+
+---
+
+## References
+
+1. Espressif Systems, *ESP-IDF Programming Guide, v5.5.x*, Espressif Systems, 2025.
+2. D. George *et al.*, *MicroPython Documentation*, micropython.org, 2025.
+3. C. Haster, *LittleFS: A Little Fail-Safe Filesystem Designed for Microcontrollers*, ARM Ltd., 2017.
+4. ILI Technology Corp., *ILI9488/ILI9341 TFT LCD Single Chip Driver Datasheet*.
+
+---
+
+<sub>Adapted from the internal technical architecture specification *"Zeno OS: A Sandboxed
+Edge-Computing Operating System for Constrained Microcontroller Platforms"* (Doc. No.
+ZOS-ARCH-002, Rev. 2.0). Portions of the SCPU/GCPU dual-domain architecture are proprietary
+and under active development, and are intentionally abstracted in this document.</sub>
