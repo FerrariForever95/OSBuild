@@ -39,7 +39,7 @@ IFS=$'\n\t'
 # §00  CONSTANTS & PATHS
 # =============================================================================
 
-readonly SCRIPT_VERSION="2.3.0"
+readonly SCRIPT_VERSION="2.4.0"
 readonly SCRIPT_NAME="ZENO OS Firmware Manager"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -54,11 +54,6 @@ readonly LOG_DIR="$REPO/logs"
 readonly SETTINGS_FILE="$REPO/.config/firmware_manager.conf"
 readonly BACKUP_DIR="$REPO/.config/backups"
 
-# NOTE: no spaces in this path — spaces in directory names are a constant
-# source of quoting bugs (word-splitting, external tools like git/find/du
-# that don't always get every path re-quoted correctly). Old releases that
-# live under the legacy "firmware releases" folder are still readable by
-# the release picker (see §08) so nothing already published is lost.
 readonly RELEASES_DIR="$REPO/firmware_releases"
 readonly LEGACY_RELEASES_DIR="$REPO/firmware releases"
 
@@ -370,7 +365,17 @@ EOF
 # §04  LOGGING SUBSYSTEM
 # =============================================================================
 
+ensure_gitignore_logs() {
+    if [[ -d "$REPO/.git" ]]; then
+        local gitignore="$REPO/.gitignore"
+        if [[ ! -f "$gitignore" ]] || ! grep -q '^logs/' "$gitignore"; then
+            echo -e "\n# Build and session logs\nlogs/" >> "$gitignore"
+        fi
+    fi
+}
+
 init_log_session() {
+    ensure_gitignore_logs
     mkdir -p "$LOG_DIR"
     local ts
     ts=$(date '+%Y%m%d_%H%M%S')
@@ -717,14 +722,7 @@ board_config_ui() {
 # =============================================================================
 # §08  RELEASE NAMING & SELECTION
 # =============================================================================
-# A "release" is one named, dated folder under $RELEASES_DIR containing a
-# single flashable merged .bin (see §09). This section is responsible for
-# turning free-text codenames into safe, space-free, filesystem-friendly
-# slugs, and for letting the user pick an existing release to overwrite/
-# re-flash, or start a brand new one — every single time, as requested.
 
-# Turn arbitrary user text into a safe slug: lowercase, spaces/underscores
-# collapse to single dashes, only [a-z0-9-] survives.
 _slugify() {
     local input="$1"
     local out
@@ -735,8 +733,6 @@ _slugify() {
     echo "$out"
 }
 
-# List existing release folders (name + parsed date) newest first.
-# Emits "path\tlabel" pairs, one per line.
 _release_list() {
     [[ -d "$RELEASES_DIR" ]] || return 0
     find "$RELEASES_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null \
@@ -747,9 +743,6 @@ _release_list() {
         done
 }
 
-# Prompt: pick an existing release to reuse, or start a new one.
-# Sets CURRENT_RELEASE_NAME, CURRENT_RELEASE_DIR, CURRENT_RELEASE_IS_NEW.
-# Returns 1 if the user cancels.
 release_select_or_new() {
     local -a menu_items=()
     local -a rows=()
@@ -766,7 +759,6 @@ release_select_or_new() {
 
     local choice
     if [[ ${#rows[@]} -eq 0 ]]; then
-        # Nothing exists yet — skip straight to "new" without bothering the user.
         choice="__NEW__"
     else
         choice=$(ui_menu "Release — New or Existing?" "${menu_items[@]}")
@@ -799,11 +791,6 @@ release_select_or_new() {
 # =============================================================================
 # §09  MERGED FIRMWARE IMAGE
 # =============================================================================
-# Produces a single, offset-correct .bin (bootloader + partition table +
-# application) that can be flashed with one write_flash at 0x0. This is the
-# only firmware file that ends up in the release folder — the three raw
-# build artifacts stay in the build directory where a developer can find
-# them if truly needed, but they are not what gets shipped/committed.
 
 build_merged_image() {
     local log_file="$1"
@@ -842,7 +829,6 @@ build_merged_image() {
 # §10  GIT & FIRMWARE RELEASE SUBSYSTEM
 # =============================================================================
 
-# Prompt for the git commit message before/after build.
 git_prompt_commit_message() {
     local now_str; now_str=$(date '+%Y-%m-%d %H:%M')
     local default_commit="Build: $CFG_BOARD — $CURRENT_RELEASE_NAME ($now_str)"
@@ -852,17 +838,12 @@ git_prompt_commit_message() {
     [[ -z "$CURRENT_COMMIT_MSG" ]] && CURRENT_COMMIT_MSG="$default_commit"
 }
 
-# Combines release selection + commit message prompt. Call this once before
-# a build/flash that will produce a release.
 release_prompt_metadata() {
     release_select_or_new || return 1
     git_prompt_commit_message
     return 0
 }
 
-# Merge the build outputs into a single .bin and place it — and only it —
-# into the chosen release folder, named after the release. Then stage,
-# commit, and (optionally) push.
 git_release_workflow() {
     local ts; ts=$(date '+%Y%m%d_%H%M%S')
     local log_file="$LOG_DIR/git_${ts}.log"
@@ -902,11 +883,14 @@ git_release_workflow() {
         return 0
     fi
 
-    ui_wait_screen "Git Operations" "Staging files (git add)…"
+    ui_wait_screen "Git Operations" "Staging all project changes (git add -A)…"
     cd "$REPO"
 
-    git add -- "$CURRENT_RELEASE_DIR" >> "$log_file" 2>&1
-    log_write "$log_file" CMD "git add -- $CURRENT_RELEASE_DIR"
+    ensure_gitignore_logs
+
+    # Stage all modifications, new files (like builder scripts), and firmware releases
+    git add -A >> "$log_file" 2>&1
+    log_write "$log_file" CMD "git add -A"
 
     ui_wait_screen "Git Operations" "Committing changes…"
     local commit_output
@@ -915,24 +899,28 @@ git_release_workflow() {
     log_write "$log_file" INFO "Committed: $CURRENT_COMMIT_MSG"
 
     if [[ "$CFG_AUTO_GIT_PUSH" == "yes" ]]; then
-        ui_wait_screen "Git Operations" "Pushing to remote origin…"
-        local push_rc=0
         local current_branch
         current_branch=$(git branch --show-current 2>/dev/null || echo "main")
+
+        ui_wait_screen "Git Operations" "Syncing with remote (rebase)…"
+        git pull --rebase origin "$current_branch" >> "$log_file" 2>&1 || true
+
+        ui_wait_screen "Git Operations" "Pushing to remote origin…"
+        local push_rc=0
         git push origin "$current_branch" >> "$log_file" 2>&1 || push_rc=$?
 
         if [[ $push_rc -eq 0 ]]; then
             log_write "$log_file" INFO "Git push succeeded."
             ui_msgbox "Release Complete" \
-                "✔ Firmware built & released!\n\nRelease : $CURRENT_RELEASE_NAME\nImage   : $(basename "$release_bin")\nFolder  : firmware_releases/$CURRENT_RELEASE_NAME/\n\nCommit  : '$CURRENT_COMMIT_MSG'\nPushed to origin/$current_branch."
+                "✔ Firmware & repository changes pushed!\n\nRelease : $CURRENT_RELEASE_NAME\nImage   : $(basename "$release_bin")\nFolder  : firmware_releases/$CURRENT_RELEASE_NAME/\n\nCommit  : '$CURRENT_COMMIT_MSG'\nPushed to origin/$current_branch."
         else
             log_write "$log_file" ERROR "Git push failed (RC: $push_rc)"
             ui_msgbox "Git Push Failed" \
-                "Files committed locally, but push failed.\n\nCheck log: $log_file\nRun 'git push' manually."
+                "Changes committed locally, but push failed.\n\nCheck log: $log_file\nRun 'git pull --rebase' and 'git push' manually."
         fi
     else
         ui_msgbox "Release Archived" \
-            "Flashable image saved in:\nfirmware_releases/$CURRENT_RELEASE_NAME/\nand committed locally."
+            "Changes and flashable image saved in:\nfirmware_releases/$CURRENT_RELEASE_NAME/\nand committed locally."
     fi
 }
 
@@ -1056,8 +1044,6 @@ _flash_summary_screen() {
     ui_status_screen "Flash Summary" "${lines[@]}"
 }
 
-# Decide what to flash: prefer a merged image (built fresh if missing but
-# raw binaries exist), fall back to the classic 3-image flash otherwise.
 _flash_validate() {
     if [[ -f "$FW_MERGED" ]]; then
         echo "merged"
@@ -1065,8 +1051,6 @@ _flash_validate() {
     fi
 
     if [[ -f "$FW_BOOTLOADER" && -f "$FW_PARTITION" && -f "$FW_MICROPYTHON" ]]; then
-        # We have raw pieces but no merged image yet — build one now so a
-        # single write_flash can be used, which is more reliable.
         local ts; ts=$(date '+%Y%m%d_%H%M%S')
         local log_file="$LOG_DIR/flash_${ts}.log"
         mkdir -p "$LOG_DIR"

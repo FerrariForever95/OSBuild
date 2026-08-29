@@ -83,7 +83,7 @@
 #define LCD_CMD_RAMWRC 0x3C   /* continuation write, used for pixel streaming */
 
 /* how many pixels one DMA pool buffer holds (2 bytes/pixel -> 4KB chunks) */
-#define FILL_CHUNK_PIXELS 2048
+#define FILL_CHUNK_PIXELS 16384
 #define FILL_CHUNK_BYTES  (FILL_CHUNK_PIXELS * 2)
 
 /* Number of buffers in the DMA pool. Sized against trans_queue_depth so
