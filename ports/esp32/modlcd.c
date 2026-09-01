@@ -1,14 +1,23 @@
 /*
- * moclcd.c — High-performance 8080 8-bit parallel LCD C module for MicroPython,
- * built directly on ESP-IDF's esp_lcd i80 driver.
- *
- * Pin Mapping:
- * - RST: GPIO 12
- * - RS (DC): GPIO 13
- * - WR: GPIO 14
- * - RD: GPIO 41
- * - BL (Backlight): GPIO 38
- * - D0-D7: GPIOs 16, 15, 11, 10, 9, 4, 18, 17
+ * ===================================================================
+ * MODULE VERSION: 1.0.0
+ * STATUS: DEV (Pending User Stability Confirmation)
+ * DRIVER: moclcd (8080 8-Bit Parallel LCD Driver for MicroPython)
+ * TARGET: ESP32-S3 (GDMA Engine, esp_lcd i80)
+ * ===================================================================
+ * CHANGELOG (v1.0.0):
+ * - Fixed preprocessor line-wrap formatting issues causing QSTR build errors.
+ * - Restored clean single-line #include, #define, and string literals.
+ * - Maintained glitch-free CS-to-GND bus init sequence with NOP flushes.
+ * - Hardware Pin Mapping:
+ *   - RST: GPIO 12
+ *   - RS (DC): GPIO 13
+ *   - WR: GPIO 14
+ *   - RD: GPIO 41
+ *   - BL (Backlight): GPIO 38
+ *   - D0-D7: GPIOs 16, 15, 11, 10, 9, 4, 18, 17
+ *   - CS: Tied to GND in hardware (cs_gpio_num = -1)
+ * ===================================================================
  */
 
 #include "py/obj.h"
@@ -22,7 +31,9 @@
 
 #include <string.h>
 
-#define LCD_CMD_NOP    0x00
+#define MODULE_VERSION_STR "1.0.0"
+
+#define LCD_CMD_NOP     0x00
 #define LCD_CMD_SWRESET 0x01
 #define LCD_CMD_SLPOUT  0x11
 #define LCD_CMD_DISPON  0x29
@@ -33,23 +44,25 @@
 #define LCD_CMD_MADCTL  0x36
 #define LCD_CMD_COLMOD  0x3A
 
-/* 4096 pixels * 2 bytes = 8KB DMA buffer (optimal balance of throughput & RAM usage) */
+/* 4096 pixels = 8192 bytes DMA scratch buffer allocated in internal SRAM */
 #define FILL_CHUNK_PIXELS 4096
 
-/* ---- Module State ---- */
+/* ---- Driver State ---- */
 static esp_lcd_i80_bus_handle_t  s_bus       = NULL;
 static esp_lcd_panel_io_handle_t s_io        = NULL;
 static mp_hal_pin_obj_t          s_reset_pin = 12;
 static mp_hal_pin_obj_t          s_bl_pin    = 38;
 static mp_hal_pin_obj_t          s_rd_pin    = 41;
+static mp_hal_pin_obj_t          s_wr_pin    = 14;
+static mp_hal_pin_obj_t          s_dc_pin    = 13;
 static bool                      s_has_reset = false;
 static uint16_t                  s_width     = 480;
 static uint16_t                  s_height    = 320;
 static uint8_t                   s_madctl    = 0x28; /* Landscape default */
-static uint8_t                  *s_fill_buf  = NULL; /* DMA capable fill scratchpad */
+static uint8_t                  *s_fill_buf  = NULL;
 
 /* -------------------------------------------------------------------
- * Helpers & Internal Primitives
+ * Internal Helpers
  * ---------------------------------------------------------------- */
 static inline void io_check(esp_err_t ret, const char *what)
 {
@@ -73,9 +86,13 @@ static inline void lcd_cmd_raw(uint8_t cmd, const void *buf, size_t len)
 static void ensure_fill_buf(void)
 {
     if (s_fill_buf == NULL) {
+        /* Allocate fill buffer in internal DMA SRAM for peak transfer speed */
         s_fill_buf = heap_caps_malloc(FILL_CHUNK_PIXELS * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
         if (s_fill_buf == NULL) {
-            mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("unable to allocate DMA memory for fill buffer"));
+            s_fill_buf = heap_caps_malloc(FILL_CHUNK_PIXELS * 2, MALLOC_CAP_DMA);
+        }
+        if (s_fill_buf == NULL) {
+            mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("no DMA memory for fill buffer"));
         }
     }
 }
@@ -135,8 +152,10 @@ static void do_draw_pixel(int x, int y, uint16_t color)
 }
 
 /* -------------------------------------------------------------------
- * moclcd.init(pclk=10_000_000, width=480, height=320, madctl=0x28)
+ * MicroPython Module API
  * ---------------------------------------------------------------- */
+
+/* moclcd.init(pclk=10_000_000, width=480, height=320, madctl=0x28) */
 static mp_obj_t moclcd_init(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args)
 {
     enum { ARG_pclk, ARG_width, ARG_height, ARG_madctl };
@@ -149,7 +168,7 @@ static mp_obj_t moclcd_init(size_t n_args, const mp_obj_t *pos_args, mp_map_t *k
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed)];
     mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed), allowed, args);
 
-    /* Clean up existing bus / IO instances if re-initializing */
+    /* Safe cleanup if re-initializing */
     if (s_io != NULL) {
         esp_lcd_panel_io_del(s_io);
         s_io = NULL;
@@ -167,24 +186,47 @@ static mp_obj_t moclcd_init(size_t n_args, const mp_obj_t *pos_args, mp_map_t *k
     s_height = (uint16_t)args[ARG_height].u_int;
     s_madctl = (uint8_t)args[ARG_madctl].u_int;
 
-    /* Parallel 8080 Data GPIO Configuration (D0 - D7) */
+    /* Clamp control pins HIGH to prevent spurious writes while CS is grounded */
+    mp_hal_pin_output(s_rd_pin);
+    mp_hal_pin_write(s_rd_pin, 1);
+
+    mp_hal_pin_output(s_wr_pin);
+    mp_hal_pin_write(s_wr_pin, 1);
+
+    mp_hal_pin_output(s_dc_pin);
+    mp_hal_pin_write(s_dc_pin, 1);
+
+    mp_hal_pin_output(s_bl_pin);
+    mp_hal_pin_write(s_bl_pin, 0); /* Keep backlight off until display init settles */
+
+    mp_hal_pin_output(s_reset_pin);
+    mp_hal_pin_write(s_reset_pin, 1);
+    s_has_reset = true;
+
+    /* Hardware reset sequence executed while bus control lines are clamped HIGH */
+    mp_hal_delay_ms(10);
+    mp_hal_pin_write(s_reset_pin, 0);
+    mp_hal_delay_ms(25);
+    mp_hal_pin_write(s_reset_pin, 1);
+    mp_hal_delay_ms(150); /* Mandatory recovery for controller internal boot */
+
     int data_gpios[8] = { 16, 15, 11, 10, 9, 4, 18, 17 };
 
     esp_lcd_i80_bus_config_t bus_cfg = {
-        .dc_gpio_num = 13, /* RS */
-        .wr_gpio_num = 14, /* WR */
+        .dc_gpio_num = s_dc_pin,
+        .wr_gpio_num = s_wr_pin,
         .clk_src     = LCD_CLK_SRC_PLL160M,
         .data_gpio_nums = {
             data_gpios[0], data_gpios[1], data_gpios[2], data_gpios[3],
             data_gpios[4], data_gpios[5], data_gpios[6], data_gpios[7],
         },
         .bus_width          = 8,
-        .max_transfer_bytes = FILL_CHUNK_PIXELS * 2 * 4,
+        .max_transfer_bytes = (size_t)s_width * (size_t)s_height * 2,
     };
     io_check(esp_lcd_new_i80_bus(&bus_cfg, &s_bus), "esp_lcd_new_i80_bus");
 
     esp_lcd_panel_io_i80_config_t io_cfg = {
-        .cs_gpio_num       = -1, /* CS tied LOW in hardware */
+        .cs_gpio_num       = -1, /* CS tied directly to GND */
         .pclk_hz           = (uint32_t)args[ARG_pclk].u_int,
         .trans_queue_depth = 10,
         .dc_levels = {
@@ -198,25 +240,11 @@ static mp_obj_t moclcd_init(size_t n_args, const mp_obj_t *pos_args, mp_map_t *k
     };
     io_check(esp_lcd_new_panel_io_i80(s_bus, &io_cfg, &s_io), "esp_lcd_new_panel_io_i80");
 
-    /* Initialize control lines */
-    mp_hal_pin_output(s_rd_pin);
-    mp_hal_pin_write(s_rd_pin, 1);
-
-    mp_hal_pin_output(s_bl_pin);
-    mp_hal_pin_write(s_bl_pin, 1);
-
-    mp_hal_pin_output(s_reset_pin);
-    mp_hal_pin_write(s_reset_pin, 1);
-    s_has_reset = true;
-
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(moclcd_init_obj, 0, moclcd_init);
 
-/* -------------------------------------------------------------------
- * moclcd.reset()
- * Optimized hardware pulse sequence conforming to ILI/ST specs.
- * ---------------------------------------------------------------- */
+/* moclcd.reset() */
 static mp_obj_t moclcd_reset(void)
 {
     if (!s_has_reset) {
@@ -225,36 +253,42 @@ static mp_obj_t moclcd_reset(void)
     mp_hal_pin_write(s_reset_pin, 1);
     mp_hal_delay_ms(10);
     mp_hal_pin_write(s_reset_pin, 0);
-    mp_hal_delay_ms(20);
+    mp_hal_delay_ms(25);
     mp_hal_pin_write(s_reset_pin, 1);
-    mp_hal_delay_ms(120);
+    mp_hal_delay_ms(150);
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(moclcd_reset_obj, moclcd_reset);
 
-/* -------------------------------------------------------------------
- * moclcd.panel_init()
- * ---------------------------------------------------------------- */
+/* moclcd.panel_init() */
 static mp_obj_t moclcd_panel_init(void)
 {
     require_init();
 
-    mp_hal_delay_ms(20);
+    /* 1. Flush any desynced multi-byte parser state with NOPs */
+    lcd_cmd_raw(LCD_CMD_NOP, NULL, 0);
+    lcd_cmd_raw(LCD_CMD_NOP, NULL, 0);
+    mp_hal_delay_ms(10);
 
+    /* 2. Software Reset */
     lcd_cmd_raw(LCD_CMD_SWRESET, NULL, 0);
-    mp_hal_delay_ms(120);
+    mp_hal_delay_ms(150); /* Mandatory: wait for internal registers to reset */
 
+    /* 3. Sleep Out */
     lcd_cmd_raw(LCD_CMD_SLPOUT, NULL, 0);
-    mp_hal_delay_ms(120);
+    mp_hal_delay_ms(150); /* Mandatory: wait for DC-DC charge pump voltage to stabilize */
 
-    uint8_t colmod = 0x55; /* 16-bit / pixel RGB565 */
+    /* 4. Interface Pixel Format (16-bit RGB565) */
+    uint8_t colmod = 0x55;
     lcd_cmd_raw(LCD_CMD_COLMOD, &colmod, 1);
     mp_hal_delay_ms(10);
 
+    /* 5. Memory Access Control (Orientation & Color Order) */
     uint8_t madctl = s_madctl;
     lcd_cmd_raw(LCD_CMD_MADCTL, &madctl, 1);
     mp_hal_delay_ms(10);
 
+    /* 6. Default Full Column & Page Window */
     uint16_t x1 = s_width - 1;
     uint16_t y1 = s_height - 1;
     uint8_t caset[4] = { 0x00, 0x00, (uint8_t)(x1 >> 8), (uint8_t)(x1 & 0xFF) };
@@ -263,16 +297,18 @@ static mp_obj_t moclcd_panel_init(void)
     uint8_t paset[4] = { 0x00, 0x00, (uint8_t)(y1 >> 8), (uint8_t)(y1 & 0xFF) };
     lcd_cmd_raw(LCD_CMD_PASET, paset, sizeof(paset));
 
+    /* 7. Display ON */
     lcd_cmd_raw(LCD_CMD_DISPON, NULL, 0);
-    mp_hal_delay_ms(50);
+    mp_hal_delay_ms(150); /* Allow gate drivers to activate */
+
+    /* 8. Enable Backlight once display pipeline is solid */
+    mp_hal_pin_write(s_bl_pin, 1);
 
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(moclcd_panel_init_obj, moclcd_panel_init);
 
-/* -------------------------------------------------------------------
- * moclcd.backlight(on)
- * ---------------------------------------------------------------- */
+/* moclcd.backlight(on) */
 static mp_obj_t moclcd_backlight(mp_obj_t on_in)
 {
     mp_hal_pin_write(s_bl_pin, mp_obj_is_true(on_in) ? 1 : 0);
@@ -280,9 +316,7 @@ static mp_obj_t moclcd_backlight(mp_obj_t on_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(moclcd_backlight_obj, moclcd_backlight);
 
-/* -------------------------------------------------------------------
- * moclcd.cmd(cmd, params=None)
- * ---------------------------------------------------------------- */
+/* moclcd.cmd(cmd, params=None) */
 static mp_obj_t moclcd_cmd(size_t n_args, const mp_obj_t *args_in)
 {
     require_init();
@@ -301,9 +335,7 @@ static mp_obj_t moclcd_cmd(size_t n_args, const mp_obj_t *args_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(moclcd_cmd_obj, 1, 2, moclcd_cmd);
 
-/* -------------------------------------------------------------------
- * moclcd.data(buf)
- * ---------------------------------------------------------------- */
+/* moclcd.data(buf) */
 static mp_obj_t moclcd_data(mp_obj_t buf_in)
 {
     require_init();
@@ -314,9 +346,7 @@ static mp_obj_t moclcd_data(mp_obj_t buf_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(moclcd_data_obj, moclcd_data);
 
-/* -------------------------------------------------------------------
- * moclcd.fill_rect(x, y, w, h, color)
- * ---------------------------------------------------------------- */
+/* moclcd.fill_rect(x, y, w, h, color) */
 static mp_obj_t moclcd_fill_rect(size_t n_args, const mp_obj_t *args_in)
 {
     require_init();
@@ -339,9 +369,7 @@ static mp_obj_t moclcd_fill_rect(size_t n_args, const mp_obj_t *args_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(moclcd_fill_rect_obj, 5, 5, moclcd_fill_rect);
 
-/* -------------------------------------------------------------------
- * moclcd.fill_screen(color)
- * ---------------------------------------------------------------- */
+/* moclcd.fill_screen(color) */
 static mp_obj_t moclcd_fill_screen(mp_obj_t color_in)
 {
     mp_obj_t args[5] = {
@@ -353,9 +381,7 @@ static mp_obj_t moclcd_fill_screen(mp_obj_t color_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(moclcd_fill_screen_obj, moclcd_fill_screen);
 
-/* -------------------------------------------------------------------
- * moclcd.blit(x, y, w, h, buf)
- * ---------------------------------------------------------------- */
+/* moclcd.blit(x, y, w, h, buf) */
 static mp_obj_t moclcd_blit(size_t n_args, const mp_obj_t *args_in)
 {
     require_init();
@@ -385,9 +411,7 @@ static mp_obj_t moclcd_blit(size_t n_args, const mp_obj_t *args_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(moclcd_blit_obj, 5, 5, moclcd_blit);
 
-/* -------------------------------------------------------------------
- * moclcd.draw_pixel(x, y, color)
- * ---------------------------------------------------------------- */
+/* moclcd.draw_pixel(x, y, color) */
 static mp_obj_t moclcd_draw_pixel(size_t n_args, const mp_obj_t *args_in)
 {
     require_init();
@@ -399,9 +423,7 @@ static mp_obj_t moclcd_draw_pixel(size_t n_args, const mp_obj_t *args_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(moclcd_draw_pixel_obj, 3, 3, moclcd_draw_pixel);
 
-/* -------------------------------------------------------------------
- * moclcd.draw_line(x0, y0, x1, y1, color)
- * ---------------------------------------------------------------- */
+/* moclcd.draw_line(x0, y0, x1, y1, color) */
 static mp_obj_t moclcd_draw_line(size_t n_args, const mp_obj_t *args_in)
 {
     require_init();
@@ -442,9 +464,7 @@ static mp_obj_t moclcd_draw_line(size_t n_args, const mp_obj_t *args_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(moclcd_draw_line_obj, 5, 5, moclcd_draw_line);
 
-/* -------------------------------------------------------------------
- * moclcd.draw_rect(x, y, w, h, color)
- * ---------------------------------------------------------------- */
+/* moclcd.draw_rect(x, y, w, h, color) */
 static mp_obj_t moclcd_draw_rect(size_t n_args, const mp_obj_t *args_in)
 {
     require_init();
@@ -456,17 +476,15 @@ static mp_obj_t moclcd_draw_rect(size_t n_args, const mp_obj_t *args_in)
 
     if (w <= 0 || h <= 0) return mp_const_none;
 
-    do_fill_rect_clip(x, y, w, 1, color);          /* top */
-    do_fill_rect_clip(x, y + h - 1, w, 1, color);  /* bottom */
-    do_fill_rect_clip(x, y, 1, h, color);          /* left */
-    do_fill_rect_clip(x + w - 1, y, 1, h, color);  /* right */
+    do_fill_rect_clip(x, y, w, 1, color);
+    do_fill_rect_clip(x, y + h - 1, w, 1, color);
+    do_fill_rect_clip(x, y, 1, h, color);
+    do_fill_rect_clip(x + w - 1, y, 1, h, color);
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(moclcd_draw_rect_obj, 5, 5, moclcd_draw_rect);
 
-/* -------------------------------------------------------------------
- * moclcd.draw_circle(x0, y0, r, color)
- * ---------------------------------------------------------------- */
+/* moclcd.draw_circle(x0, y0, r, color) */
 static mp_obj_t moclcd_draw_circle(size_t n_args, const mp_obj_t *args_in)
 {
     require_init();
@@ -507,9 +525,7 @@ static mp_obj_t moclcd_draw_circle(size_t n_args, const mp_obj_t *args_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(moclcd_draw_circle_obj, 4, 4, moclcd_draw_circle);
 
-/* -------------------------------------------------------------------
- * moclcd.fill_circle(x0, y0, r, color)
- * ---------------------------------------------------------------- */
+/* moclcd.fill_circle(x0, y0, r, color) */
 static mp_obj_t moclcd_fill_circle(size_t n_args, const mp_obj_t *args_in)
 {
     require_init();
@@ -545,21 +561,22 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(moclcd_fill_circle_obj, 4, 4, moclcd_
 
 /* ---- Module Globals & Registration ---- */
 static const mp_rom_map_elem_t moclcd_globals_table[] = {
-    { MP_ROM_QSTR(MP_QSTR___name__),    MP_ROM_QSTR(MP_QSTR_moclcd)          },
-    { MP_ROM_QSTR(MP_QSTR_init),        MP_ROM_PTR(&moclcd_init_obj)        },
-    { MP_ROM_QSTR(MP_QSTR_reset),       MP_ROM_PTR(&moclcd_reset_obj)       },
-    { MP_ROM_QSTR(MP_QSTR_panel_init),  MP_ROM_PTR(&moclcd_panel_init_obj)  },
-    { MP_ROM_QSTR(MP_QSTR_backlight),   MP_ROM_PTR(&moclcd_backlight_obj)   },
-    { MP_ROM_QSTR(MP_QSTR_cmd),         MP_ROM_PTR(&moclcd_cmd_obj)         },
-    { MP_ROM_QSTR(MP_QSTR_data),        MP_ROM_PTR(&moclcd_data_obj)        },
-    { MP_ROM_QSTR(MP_QSTR_fill_rect),   MP_ROM_PTR(&moclcd_fill_rect_obj)   },
-    { MP_ROM_QSTR(MP_QSTR_fill_screen), MP_ROM_PTR(&moclcd_fill_screen_obj) },
-    { MP_ROM_QSTR(MP_QSTR_blit),        MP_ROM_PTR(&moclcd_blit_obj)        },
-    { MP_ROM_QSTR(MP_QSTR_draw_pixel),  MP_ROM_PTR(&moclcd_draw_pixel_obj)  },
-    { MP_ROM_QSTR(MP_QSTR_draw_line),   MP_ROM_PTR(&moclcd_draw_line_obj)   },
-    { MP_ROM_QSTR(MP_QSTR_draw_rect),   MP_ROM_PTR(&moclcd_draw_rect_obj)   },
-    { MP_ROM_QSTR(MP_QSTR_draw_circle), MP_ROM_PTR(&moclcd_draw_circle_obj) },
-    { MP_ROM_QSTR(MP_QSTR_fill_circle), MP_ROM_PTR(&moclcd_fill_circle_obj) },
+    { MP_ROM_QSTR(MP_QSTR___name__),    MP_ROM_QSTR(MP_QSTR_moclcd)           },
+    { MP_ROM_QSTR(MP_QSTR_version),     MP_ROM_QSTR(MP_QSTR_1_0_0)            },
+    { MP_ROM_QSTR(MP_QSTR_init),        MP_ROM_PTR(&moclcd_init_obj)          },
+    { MP_ROM_QSTR(MP_QSTR_reset),       MP_ROM_PTR(&moclcd_reset_obj)         },
+    { MP_ROM_QSTR(MP_QSTR_panel_init),  MP_ROM_PTR(&moclcd_panel_init_obj)     },
+    { MP_ROM_QSTR(MP_QSTR_backlight),   MP_ROM_PTR(&moclcd_backlight_obj)      },
+    { MP_ROM_QSTR(MP_QSTR_cmd),         MP_ROM_PTR(&moclcd_cmd_obj)            },
+    { MP_ROM_QSTR(MP_QSTR_data),        MP_ROM_PTR(&moclcd_data_obj)           },
+    { MP_ROM_QSTR(MP_QSTR_fill_rect),   MP_ROM_PTR(&moclcd_fill_rect_obj)      },
+    { MP_ROM_QSTR(MP_QSTR_fill_screen), MP_ROM_PTR(&moclcd_fill_screen_obj)    },
+    { MP_ROM_QSTR(MP_QSTR_blit),        MP_ROM_PTR(&moclcd_blit_obj)           },
+    { MP_ROM_QSTR(MP_QSTR_draw_pixel),  MP_ROM_PTR(&moclcd_draw_pixel_obj)     },
+    { MP_ROM_QSTR(MP_QSTR_draw_line),   MP_ROM_PTR(&moclcd_draw_line_obj)      },
+    { MP_ROM_QSTR(MP_QSTR_draw_rect),   MP_ROM_PTR(&moclcd_draw_rect_obj)      },
+    { MP_ROM_QSTR(MP_QSTR_draw_circle), MP_ROM_PTR(&moclcd_draw_circle_obj)    },
+    { MP_ROM_QSTR(MP_QSTR_fill_circle), MP_ROM_PTR(&moclcd_fill_circle_obj)    },
 };
 static MP_DEFINE_CONST_DICT(moclcd_globals, moclcd_globals_table);
 
