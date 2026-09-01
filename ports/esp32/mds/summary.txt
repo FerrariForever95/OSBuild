@@ -1,0 +1,19 @@
+ESP32 MicroPython Firmware - Improvement Opportunities
+
+TOP PRIORITY: Enable CAN/TWAI Support
+- Implementation already exists in extmod/machine_can.c
+- Need to enable via mpconfigport.h:
+  * #define MICROPY_PY_MACHINE_CAN 1
+  * #define MICROPY_HW_NUM_CAN 1
+  * #define MICROPY_PY_MACHINE_CAN_INCLUDEFILE "machine_can.c"
+- Create ports/esp32/machine_can.c implementing port-specific functions
+- Would enable machine.CAN for automotive/industrial use
+
+OTHER OPPORTUNITIES:
+1. USB Host Support (currently only device support)
+2. Hall Effect Sensor Access (machine.hall_sensor())
+3. Enhanced Power Management Controls
+4. ESP32-S3 AI Acceleration Exposure
+5. Additional Filesystem Options
+
+DETAILS AVAILABLE IN: firmware_improvements_analysis.md
