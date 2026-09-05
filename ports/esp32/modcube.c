@@ -2,14 +2,10 @@
  * =====================================================================================
  *  FILE:         modcube.c
  *  MODULE:       cube (MicroPython native C module)
- *  TARGET:       ESP32-S3, ESP-IDF esp_lcd i80 (Intel 8080) parallel bus, 8-bit data
- *  PANEL:        ILI9488, 480 x 320
- *
- *  DESCRIPTION:
- *  - Native C perspective rasterizer with directional lighting and floor shadow.
- *  - Direct hardware init using moclcd v1.5.0 STABLE sequence.
- *  - Exposes:
- *      cube.start() -> Launches the real-time 3D animation loop with corner FPS display.
+ *  TARGET:       ESP32-S3, ILI9488 8-bit Parallel i80 (via moclcd driver)
+ *  DESCRIPTION:  Native 3D Perspective Rasterizer Engine with Blinn-Phong Shading,
+ *                Virtual Floor Shadow Projection, Dynamic Bounding-Box DMA Blit,
+ *                and Corner FPS Overlay.
  * =====================================================================================
  */
 
@@ -17,100 +13,16 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-
-#include "py/runtime.h"
-#include "py/obj.h"
-#include "py/mphal.h"
-
-#include "driver/gpio.h"
-#include "esp_lcd_panel_io.h"
-#include "esp_lcd_panel_vendor.h"
-#include "esp_lcd_panel_ops.h"
-#include "esp_lcd_types.h"
-#include "esp_timer.h"
-
-#define WIDTH              480
-#define HEIGHT             320
-#define CX                 240
-#define CY                 150
-#define FOV                240.0f
-#define CAM_Z              3.8f
-
-#define BB_W               300
-#define BB_H               300
-#define BB_X               (CX - 150)  /* 90 */
-#define BB_Y               (CY - 150)  /* 0  */
-#define ROW_PITCH_BYTES    (BB_W * 2)  /* 600 */
-
-#define LCD_PIN_NUM_D0     16
-#define LCD_PIN_NUM_D1     15
-#define LCD_PIN_NUM_D2     11
-#define LCD_PIN_NUM_D3     10
-#define LCD_PIN_NUM_D4     9
-#define LCD_PIN_NUM_D5     4
-#define LCD_PIN_NUM_D6     18
-#define LCD_PIN_NUM_D7     17
-#define LCD_PIN_NUM_DC     13
-#define LCD_PIN_NUM_WR     14
-#define LCD_PIN_NUM_RD     41
-#define LCD_PIN_NUM_RST    12
-#define LCD_PIN_NUM_BL     38
-#define LCD_PIN_NUM_CS     (-1)
-
-#define LCD_CMD_CASET      0x2A
-#define LCD_CMD_PASET      0x2B
-#define LCD_CMD_RAMWR      0x2C
-#define LCD_CMD_RAMWRC     0x3C
-
-static esp_lcd_i80_bus_handle_t  s_bus = NULL;
-static esp_lcd_panel_io_handle_t s_io  = NULL;
-
-/* Framebuffer for dirty-band blits (300 x 300 x 2 = 180,000 bytes) */
-static uint8_t s_frame_buf[BB_W * BB_H * 2];
-
-/* Font 5x7 for corner FPS */
-#define FONT_FIRST 32
-#define FONT_LAST  126
-static const uint8_t k_font5x7[][5] = {
-    {0x00,0x00,0x00,0x00,0x00}, {0x00,0x00,0x5F,0x00,0x00}, {0x00,0x07,0x00,0x07,0x00},
-    {0x14,0x7F,0x14,0x7F,0x14}, {0x24,0x2A,0x7F,0x2A,0x12}, {0x23,0x13,0x08,0x64,0x62},
-    {0x36,0x49,0x56,0x20,0x50}, {0x00,0x08,0x07,0x03,0x00}, {0x00,0x1C,0x22,0x41,0x00},
-    {0x00,0x41,0x22,0Here is the complete C implementation of the 3D rotating cube engine packaged as a native MicroPython module `cube` (`modcube.c`). It operates directly on top of your working `modlcd.c` driver and `esp_lcd` hardware state, executing the entire mathematical transform, Blinn-Phong lighting, virtual floor shadow projection, span rasterization, and DMA blitting at native C speeds.
-
-### C Source File: `modcube.c`
-
-```c
-/*
- * =====================================================================================
- *  FILE:         modcube.c
- *  MODULE:       cube (MicroPython native C module)
- *  TARGET:       ESP32-S3, ILI9488 8-bit Parallel i80 (via moclcd driver)
- *  DESCRIPTION:  Native 3D Perspective Rasterizer Engine with Blinn-Phong Shading,
- *                Virtual Floor Shadow Projection, Dynamic Bounding-Box DMA Blit,
- *                and Corner FPS Overlay.
- *
- *  USAGE:
- *      import cube
- *      cube.start()          # Runs infinite real-time rotating cube demo
- *      cube.start(200)       # Runs exactly 200 frames and returns
- * =====================================================================================
- */
-
-#include <math.h>
-#include <string.h>
-#include <stdlib.h>
+#include <stdbool.h>
 
 #include "py/runtime.h"
 #include "py/obj.h"
 #include "py/mphal.h"
 
 #include "esp_heap_caps.h"
-#include "esp_rom_sys.h"
 #include "esp_timer.h"
 
-/* -------------------------------------------------------------------------
- * External LCD Driver Linkage (from modlcd.c)
- * ------------------------------------------------------------------------- */
+/* Linkage to moclcd internal exports */
 extern void moclcd_init_internal(void);
 extern void moclcd_panel_init_internal(void);
 extern void moclcd_backlight_internal(bool on);
@@ -119,11 +31,6 @@ extern void moclcd_fill_rect_internal(uint16_t x, uint16_t y, uint16_t w, uint16
 extern void moclcd_blit_internal(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const void *buf);
 extern void moclcd_draw_text_internal(uint16_t x, uint16_t y, const char *str, uint16_t fg, uint16_t bg);
 
-/* -------------------------------------------------------------------------
- * Screen & Projection Dimensions
- * ------------------------------------------------------------------------- */
-#define SCREEN_W     480
-#define SCREEN_H     320
 #define CENTER_X     240
 #define CENTER_Y     150
 #define FOV_SCALE    240.0f
@@ -132,7 +39,7 @@ extern void moclcd_draw_text_internal(uint16_t x, uint16_t y, const char *str, u
 #define BB_W         300
 #define BB_H         300
 #define BB_X         (CENTER_X - (BB_W / 2))  /* 90 */
-#define BB_Y         (CENTER_Y - (BB_H / 2))  /* 0 */
+#define BB_Y         (CENTER_Y - (BB_H / 2))  /* 0  */
 #define ROW_PITCH    (BB_W * 2)               /* 600 bytes */
 
 #define COLOR_WHITE  0xFFFF
@@ -140,9 +47,6 @@ extern void moclcd_draw_text_internal(uint16_t x, uint16_t y, const char *str, u
 #define COLOR_BOOT   0xF800
 #define COLOR_SHADOW 0x8410
 
-/* -------------------------------------------------------------------------
- * 3D Model & Lighting Constants
- * ------------------------------------------------------------------------- */
 #define VIRTUAL_FLOOR_Y (-1.45f)
 #define LIGHT_DIR_Y     (-1.75f)
 #define INV_LIGHT_DIR_Y (1.0f / LIGHT_DIR_Y)
@@ -165,17 +69,14 @@ static const float CUBE_VERTS[8][3] = {
 };
 
 static const int CUBE_FACES[6][4] = {
-    {0, 1, 2, 3},  /* Back   */
-    {5, 4, 7, 6},  /* Front  */
-    {4, 0, 3, 7},  /* Left   */
-    {1, 5, 6, 2},  /* Right  */
-    {3, 2, 6, 7},  /* Top    */
-    {4, 5, 1, 0}   /* Bottom */
+    {0, 1, 2, 3},
+    {5, 4, 7, 6},
+    {4, 0, 3, 7},
+    {1, 5, 6, 2},
+    {3, 2, 6, 7},
+    {4, 5, 1, 0}
 };
 
-/* -------------------------------------------------------------------------
- * Preallocated Buffers (DMA & Cache-aligned in SRAM)
- * ------------------------------------------------------------------------- */
 static uint8_t *s_frame_buf = NULL;
 static int s_edge_min[BB_H];
 static int s_edge_max[BB_H];
@@ -269,9 +170,6 @@ static void raster_quad(const point2d_t *pts, uint16_t color, int *out_min_y, in
     *out_max_y = max_y;
 }
 
-/* -------------------------------------------------------------------------
- * Cube Engine Main Execution Loop
- * ------------------------------------------------------------------------- */
 static mp_obj_t cube_start(size_t n_args, const mp_obj_t *args)
 {
     int max_frames = (n_args > 0) ? mp_obj_get_int(args[0]) : -1;
@@ -283,11 +181,11 @@ static mp_obj_t cube_start(size_t n_args, const mp_obj_t *args)
         }
     }
 
-    /* Standardized Hardware Boot Sequence */
     moclcd_init_internal();
     moclcd_panel_init_internal();
     moclcd_backlight_internal(true);
     moclcd_fill_screen_internal(COLOR_BOOT);
+    mp_hal_delay_ms(50);
     moclcd_fill_screen_internal(COLOR_WHITE);
 
     memset(s_frame_buf, 0xFF, BB_W * BB_H * 2);
@@ -307,7 +205,6 @@ static mp_obj_t cube_start(size_t n_args, const mp_obj_t *args)
     while (max_frames < 0 || frame_count < max_frames) {
         clear_dirty_rows(s_frame_buf, prev_min_y, prev_max_y);
 
-        /* 3x3 Combined Rotation Matrix */
         float cx = cosf(ax), sx = sinf(ax);
         float cy = cosf(ay), sy = sinf(ay);
         float cz = cosf(az), sz = sinf(az);
@@ -331,7 +228,6 @@ static mp_obj_t cube_start(size_t n_args, const mp_obj_t *args)
         point2d_t sv[8];
         point2d_t shad[8];
 
-        /* Vertex Transformation and Dual Perspective Projections */
         for (int i = 0; i < 8; i++) {
             float vx = CUBE_VERTS[i][0];
             float vy = CUBE_VERTS[i][1];
@@ -341,7 +237,6 @@ static mp_obj_t cube_start(size_t n_args, const mp_obj_t *args)
             float y3 = r10 * vx + r11 * vy + r12 * vz;
             float z3 = r20 * vx + r21 * vy + r22 * vz;
 
-            /* Virtual Floor Ray Intersection */
             float t = (VIRTUAL_FLOOR_Y - y3) * INV_LIGHT_DIR_Y;
             float sx_world = x3 + t * LIGHT_DIR_X;
             float sz_world = z3 + t * LIGHT_DIR_Z + CAMERA_Z;
@@ -360,7 +255,7 @@ static mp_obj_t cube_start(size_t n_args, const mp_obj_t *args)
             sv[i].y = (int)((CENTER_Y - (y3 * FOV_SCALE * inv_z)) - BB_Y);
         }
 
-        /* 1. Cast Floor Shadows */
+        /* Shadow pass */
         for (int f = 0; f < 6; f++) {
             point2d_t s_pts[4] = {
                 shad[CUBE_FACES[f][0]],
@@ -374,7 +269,7 @@ static mp_obj_t cube_start(size_t n_args, const mp_obj_t *args)
             if (s_max > frame_max_y) frame_max_y = s_max;
         }
 
-        /* 2. Face Culling, Lighting & Depth Sorting */
+        /* Face pass */
         float sort_keys[6];
         int sort_idxs[6];
         uint16_t face_colors[6];
@@ -424,7 +319,7 @@ static mp_obj_t cube_start(size_t n_args, const mp_obj_t *args)
 
                 if (r > 1.0f) r = 1.0f;
                 if (g > 1.0f) g = 1.0f;
-                if b > 1.0f; b = 1.0f;
+                if (b > 1.0f) b = 1.0f;
 
                 uint16_t c = ((uint16_t)(r * 31.0f) << 11) |
                              ((uint16_t)(g * 63.0f) << 5)  |
@@ -437,7 +332,7 @@ static mp_obj_t cube_start(size_t n_args, const mp_obj_t *args)
             }
         }
 
-        /* In-Place Insertion Sort */
+        /* Sort faces back-to-front */
         for (int i = 1; i < active_count; i++) {
             float k = sort_keys[i];
             int idx_val = sort_idxs[i];
@@ -451,7 +346,6 @@ static mp_obj_t cube_start(size_t n_args, const mp_obj_t *args)
             sort_idxs[j + 1] = idx_val;
         }
 
-        /* 3. Rasterize Visible Faces Over Shadow */
         for (int i = 0; i < active_count; i++) {
             int f = sort_idxs[i];
             point2d_t q_pts[4] = {
@@ -483,7 +377,6 @@ static mp_obj_t cube_start(size_t n_args, const mp_obj_t *args)
         ay += 0.12f;
         az += 0.05f;
 
-        /* 4. Top-Left FPS Readout */
         fps_frame_count++;
         if (fps_frame_count >= 15) {
             int64_t now = esp_timer_get_time();
@@ -505,9 +398,6 @@ static mp_obj_t cube_start(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(cube_start_obj, 0, 1, cube_start);
 
-/* -------------------------------------------------------------------------
- * MicroPython Module Registration
- * ------------------------------------------------------------------------- */
 static const mp_rom_map_elem_t cube_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_cube) },
     { MP_ROM_QSTR(MP_QSTR_start),    MP_ROM_PTR(&cube_start_obj) },
