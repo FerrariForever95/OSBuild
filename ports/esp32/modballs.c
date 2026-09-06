@@ -4,16 +4,11 @@
  *  MODULE:       billiards (MicroPython native C module)
  *  TARGET:       ESP32-S3, ILI9488 8-bit Parallel i80 (moclcd v1.5.0-STABLE)
  *  DESCRIPTION:  High-performance Multi-Body 3D Billiard Spheres simulation in C.
- *                3 Glossy Colored Spheres (Ruby Red, Cyan Teal, Liquid Gold)
- *                with 3D elastic sphere-sphere collisions, momentum resolution,
- *                squash-and-stretch floor impacts, additive overlapping ground shadows,
- *                Painter's depth sorting, hardware dirty-band DMA blitting,
- *                frame pacing capped to 72 FPS, and clean Ctrl+C handling.
- *
- *  USAGE:
- *      import billiards
- *      billiards.start()       # Runs until Ctrl+C is pressed
- *      billiards.start(500)    # Runs for 500 frames or until Ctrl+C
+ *                Features 3 Glossy Colored Spheres (Ruby Red, Cyan Teal, Liquid Gold)
+ *                with 3D elastic collisions, momentum transfer, dynamic squash/stretch,
+ *                additive shadow blending, back-to-front depth sorting, and a 72 FPS cap.
+ *                Includes multi-tier DMA buffer allocation fallback (Internal SRAM -> 
+ *                PSRAM / SPIRAM -> General 8-bit heap) to prevent allocation crashes.
  * =====================================================================================
  */
 
@@ -142,8 +137,8 @@ static void render_shadow_disk(int cx, int cy, int rx, int ry, int density, uint
  * Analytical 3D Sphere Renderer with Colored Base & Squash Deformation
  * ------------------------------------------------------------------------- */
 static void render_sphere_squash(int cx, int cy, int r_screen, float sx, float sy,
-                                float base_r, float base_g, float base_b,
-                                uint8_t *buf, int *out_min, int *out_max)
+                                 float base_r, float base_g, float base_b,
+                                 uint8_t *buf, int *out_min, int *out_max)
 {
     int rx = (int)((float)r_screen * sx);
     int ry = (int)((float)r_screen * sy);
@@ -234,9 +229,23 @@ static mp_obj_t billiards_start(size_t n_args, const mp_obj_t *args)
     int max_frames = (n_args > 0) ? mp_obj_get_int(args[0]) : -1;
 
     if (s_frame_buf == NULL) {
-        s_frame_buf = (uint8_t *)heap_caps_malloc(BB_W * BB_H * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        size_t buf_size = (size_t)BB_W * BB_H * 2;
+        
+        /* Step 1: Attempt allocation in high-speed Internal DMA SRAM */
+        s_frame_buf = (uint8_t *)heap_caps_aligned_alloc(64, buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+
+        /* Step 2: Fallback to PSRAM (SPIRAM) with 64-byte alignment */
         if (s_frame_buf == NULL) {
-            mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("billiards: failed to allocate DMA frame buffer"));
+            s_frame_buf = (uint8_t *)heap_caps_aligned_alloc(64, buf_size, MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM);
+        }
+
+        /* Step 3: Generic DMA heap fallback */
+        if (s_frame_buf == NULL) {
+            s_frame_buf = (uint8_t *)heap_caps_aligned_alloc(64, buf_size, MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+        }
+
+        if (s_frame_buf == NULL) {
+            mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("billiards: failed to allocate DMA frame buffer in SRAM or PSRAM"));
         }
     }
 
@@ -286,7 +295,7 @@ static mp_obj_t billiards_start(size_t n_args, const mp_obj_t *args)
     while (max_frames < 0 || frame_count < max_frames) {
         int64_t frame_start = esp_timer_get_time();
 
-        /* Trap Ctrl+C (KeyboardInterrupt) from MicroPython REPL */
+        /* Trap Ctrl+C (KeyboardInterrupt) cleanly to return to REPL */
         mp_handle_pending(true);
 
         clear_dirty_rows(s_frame_buf, prev_min_y, prev_max_y);
