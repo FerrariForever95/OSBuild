@@ -153,6 +153,7 @@ list(APPEND MICROPY_SOURCE_PORT
     modcube.c
     modsphere.c
     modballs.c
+    modgyro.c
 )
 list(TRANSFORM MICROPY_SOURCE_PORT PREPEND ${MICROPY_PORT_DIR}/)
 list(APPEND MICROPY_SOURCE_PORT ${CMAKE_BINARY_DIR}/pins.c)
