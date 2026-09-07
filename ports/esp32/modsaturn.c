@@ -1,7 +1,8 @@
 // =====================================================================================
 //  FILE:         modsaturn.c
 //  TARGET:       ESP32-S3, ILI9488 8-bit Parallel Intel 8080 Bus via DMA
-//  DESCRIPTION:  Direct-Execution Synchronous Native C Module for Analytical Saturn
+//  DESCRIPTION:  Synchronous Native C Module for Analytical Saturn with Precession Wobble,
+//                Dirty-Row Bounding Box DMA, and Adjustable FPS (e.g. saturn.start(50)).
 // =====================================================================================
 
 #include <stdint.h>
@@ -234,8 +235,16 @@ static void render_smooth_saturn_sphere(uint8_t *frame_buf, float tilt_y, float 
     }
 }
 
-// saturn.start() - Executes synchronously right away; press Ctrl+C to break out to REPL
-static mp_obj_t mod_saturn_start(void) {
+// saturn.start([fps]) - Synchronous loop with frame pacing & Ctrl+C check
+static mp_obj_t mod_saturn_start(size_t n_args, const mp_obj_t *args) {
+    uint32_t target_fps = 60;
+    if (n_args > 0) {
+        target_fps = (uint32_t)mp_obj_get_int(args[0]);
+        if (target_fps < 1) target_fps = 1;
+        if (target_fps > 120) target_fps = 120;
+    }
+    uint32_t target_delay_ms = 1000 / target_fps;
+
     uint8_t *frame_buf = (uint8_t *)heap_caps_malloc(BB_W * BB_H * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     if (!frame_buf) {
         mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("Failed to allocate DMA frame buffer"));
@@ -253,9 +262,9 @@ static mp_obj_t mod_saturn_start(void) {
     int prev_min_y = 0;
     int prev_max_y = BB_H - 1;
 
-    // Main blocking render loop (Ctrl+C raises KeyboardInterrupt to exit cleanly back to REPL)
     while (true) {
-        mp_handle_pending(true); // Allows KeyboardInterrupt (Ctrl+C) check
+        mp_handle_pending(true); // Allows clean Ctrl+C interruption back to REPL
+        int64_t frame_start = esp_timer_get_time();
 
         time_phase += 0.045f;
         float tilt_val = 0.38f + sinf(time_phase) * 0.10f;
@@ -286,13 +295,16 @@ static mp_obj_t mod_saturn_start(void) {
         prev_min_y = f_min;
         prev_max_y = f_max;
 
-        mp_hal_delay_ms(12);
+        int64_t elapsed_ms = (esp_timer_get_time() - frame_start) / 1000;
+        if (elapsed_ms < target_delay_ms) {
+            mp_hal_delay_ms(target_delay_ms - elapsed_ms);
+        }
     }
 
     heap_caps_free(frame_buf);
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_0(mod_saturn_start_obj, mod_saturn_start);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_saturn_start_obj, 0, 1, mod_saturn_start);
 
 static const mp_rom_map_elem_t saturn_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_saturn) },
