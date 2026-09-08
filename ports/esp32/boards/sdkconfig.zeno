@@ -12,23 +12,8 @@ CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 
 # Board Configuration
 #
-# | Board              | Flash | Flash Mode | PSRAM | PSRAM Mode |
-# |--------------------|------:|------------|------:|------------|
-# | ESP32-S3 Generic   | 16 MB | QIO        | 8 MB  | Octal / OPI |
-# | Shrike-Fi          |  8 MB | DIO        | 8 MB  | Quad / QSPI |
+# | Board                | Flash | Flash Mode | PSRAM | PSRAM Mode |
+# |----------------------|------:|------------|------:|------------|
+# | ESP32-S3 Generic     | 16 MB | QIO        | 8 MB  | Octal / OPI |
+# | Shrike-Fi            |  8 MB | DIO        | 8 MB  | Quad / QSPI |
 
-# =====================================================================
-# Zeno OS Performance, Stack & DMA Heap Overrides
-# =====================================================================
-
-# Expand Main Task Stack to handle deep 3D matrix math & lighting pipelines safely
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
-
-# PSRAM Heap & Allocation Integration for large buffer handling
-CONFIG_SPIRAM_USE_CAPS_ALLOC=y
-CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
-
-# ESP32-S3 Cache Optimizations for maximum graphics throughput and FPS
-CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
-CONFIG_ESP32S3_DATA_CACHE_32KB=y
-CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
