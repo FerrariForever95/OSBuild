@@ -42,6 +42,7 @@
 #include "esp_log.h"
 #include "esp_memory_utils.h"
 #include "esp_psram.h"
+#include "esp_heap_caps.h"
 
 #include "py/cstack.h"
 #include "py/nlr.h"
@@ -76,6 +77,9 @@
 // MicroPython runs as a task under FreeRTOS
 #define MP_TASK_PRIORITY        (ESP_TASK_PRIO_MIN + 1)
 
+// Target initial heap size for Zeno OS in external Octal PSRAM (4MB)
+#define ZENO_GC_HEAP_SIZE       (4 * 1024 * 1024)
+
 typedef struct _native_code_node_t {
     struct _native_code_node_t *next;
     uint32_t data[];
@@ -93,10 +97,8 @@ int vprintf_null(const char *format, va_list ap) {
 #if MICROPY_SSL_MBEDTLS
 static time_t platform_mbedtls_time(time_t *timer) {
     // mbedtls_time requires time in seconds from EPOCH 1970
-
     struct timeval tv;
     gettimeofday(&tv, NULL);
-
     return tv.tv_sec + TIMEUTILS_SECONDS_1970_TO_2000;
 }
 #endif
@@ -127,16 +129,43 @@ void mp_task(void *pvParameter) {
         ESP_LOGE("esp_init", "can't create event loop: 0x%x\n", err);
     }
 
-    void *mp_task_heap = MP_PLAT_ALLOC_HEAP(MICROPY_GC_INITIAL_HEAP_SIZE);
+    // Allocate the MicroPython GC arena explicitly from external PSRAM.
+    // This preserves all Internal SRAM for GDMA descriptors and LCD double buffers.
+    size_t gc_heap_size = ZENO_GC_HEAP_SIZE;
+    void *mp_task_heap = heap_caps_malloc(gc_heap_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
     if (mp_task_heap == NULL) {
-        printf("mp_task_heap allocation failed!\n");
+        // Fallback: try 2MB in PSRAM
+        gc_heap_size = 2 * 1024 * 1024;
+        mp_task_heap = heap_caps_malloc(gc_heap_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+
+    if (mp_task_heap == NULL) {
+        // Fallback: try 1MB in PSRAM
+        gc_heap_size = 1024 * 1024;
+        mp_task_heap = heap_caps_malloc(gc_heap_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+
+    if (mp_task_heap == NULL) {
+        // Last-resort fallback: allocate from internal SRAM using conservative size
+        gc_heap_size = 64 * 1024;
+        mp_task_heap = heap_caps_malloc(gc_heap_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+
+    if (mp_task_heap == NULL) {
+        printf("FATAL: mp_task_heap allocation failed across all memory tiers!\n");
         esp_restart();
     }
+
+    ESP_LOGI("zeno_mem", "MicroPython GC Arena: %u KB allocated at %p (%s)",
+             (unsigned int)(gc_heap_size / 1024),
+             mp_task_heap,
+             esp_ptr_external_ram(mp_task_heap) ? "Octal PSRAM" : "Internal SRAM");
 
 soft_reset:
     // initialise the stack pointer for the main thread
     mp_cstack_init_with_top((void *)sp, MICROPY_TASK_STACK_SIZE);
-    gc_init(mp_task_heap, mp_task_heap + MICROPY_GC_INITIAL_HEAP_SIZE);
+    gc_init(mp_task_heap, (uint8_t *)mp_task_heap + gc_heap_size);
     mp_init();
     mp_obj_list_append(mp_sys_path, MP_OBJ_NEW_QSTR(MP_QSTR__slash_lib));
     readline_init0();
