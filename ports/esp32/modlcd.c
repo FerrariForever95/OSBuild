@@ -442,7 +442,7 @@ static const char *TAG = "moclcd";
 /* ===================================================================================
  *  FIXED PIN MAP (from PCB)
  * =================================================================================== */
-#define LCD_PIN_NUM_D0      16
+#define LCD_PIN_NUM_D0      8
 #define LCD_PIN_NUM_D1      15
 #define LCD_PIN_NUM_D2      11
 #define LCD_PIN_NUM_D3      10
