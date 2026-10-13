@@ -149,15 +149,22 @@ list(APPEND MICROPY_SOURCE_PORT
     modzfs.c
 #   modili9488.c
 #   ili9488.c
-    modlcd.c
-    modcube.c
-    modsphere.c
-    modballs.c
-    modgyro.c
-    modcar.c
-    modsaturn.c
-    modsolarsys.c
+#   modlcd.c   # disabled: replaced by zeno_lcd (registers module "lcd")
+#    modcube.c
+ #   modsphere.c
+ #   modballs.c
+  #  modgyro.c
+   # modcar.c
+   # modsaturn.c
+   # modsolarsys.c
 
+    # --- zeno_lcd: ILI9488 8-bit parallel + resistive touch (modules "lcd", "touch") ---
+    zeno_modules/zeno_lcd/lcd_bus.c
+    zeno_modules/zeno_lcd/ili9488_panel.c
+    zeno_modules/zeno_lcd/touch_drv.c
+    zeno_modules/zeno_lcd/touch_calib.c
+    zeno_modules/zeno_lcd/modzlcd.c
+    zeno_modules/zeno_lcd/modztouch.c
 )
 list(TRANSFORM MICROPY_SOURCE_PORT PREPEND ${MICROPY_PORT_DIR}/)
 list(APPEND MICROPY_SOURCE_PORT ${CMAKE_BINARY_DIR}/pins.c)
@@ -248,6 +255,7 @@ idf_component_register(
         ${MICROPY_INC_USERMOD}
         ${MICROPY_INC_TINYUSB}
         ${MICROPY_PORT_DIR}
+        ${MICROPY_PORT_DIR}/zeno_modules/zeno_lcd
         ${MICROPY_BOARD_DIR}
         ${CMAKE_BINARY_DIR}
     LDFRAGMENTS
