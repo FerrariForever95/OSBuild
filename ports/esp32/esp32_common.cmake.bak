@@ -212,6 +212,7 @@ list(APPEND IDF_COMPONENTS
     nvs_flash
     sdmmc
     soc
+    spiffs
     spi_flash
     ulp
     usb

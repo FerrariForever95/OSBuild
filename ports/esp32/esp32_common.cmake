@@ -149,7 +149,7 @@ list(APPEND MICROPY_SOURCE_PORT
     modzfs.c
 #   modili9488.c
 #   ili9488.c
-#   modlcd.c   # disabled: replaced by zeno_lcd (registers module "lcd")
+#   modlcd.c   # disabled: replaced by zenotft (registers module "lcd")
 #    modcube.c
  #   modsphere.c
  #   modballs.c
@@ -158,13 +158,16 @@ list(APPEND MICROPY_SOURCE_PORT
    # modsaturn.c
    # modsolarsys.c
 
-    # --- zeno_lcd: ILI9488 8-bit parallel + resistive touch (modules "lcd", "touch") ---
-    zeno_modules/zeno_lcd/lcd_bus.c
-    zeno_modules/zeno_lcd/ili9488_panel.c
-    zeno_modules/zeno_lcd/touch_drv.c
-    zeno_modules/zeno_lcd/touch_calib.c
-    zeno_modules/zeno_lcd/modzlcd.c
-    zeno_modules/zeno_lcd/modztouch.c
+    # --- zenotft: ILI9488 8-bit parallel + resistive touch (module "zenotft") ---
+    zeno_modules/zenotft/modzenotft.c
+    zeno_modules/zenotft/vendor/lcd_com.c
+    zeno_modules/zenotft/vendor/lcd_lib.c
+    zeno_modules/zenotft/vendor/ili9341.c
+    zeno_modules/zenotft/vendor/ili9488.c
+    zeno_modules/zenotft/vendor/fontx.c
+    zeno_modules/zenotft/vendor/pngle.c
+    zeno_modules/zenotft/vendor/decode_png.c
+    zeno_modules/zenotft/vendor/decode_jpeg_v5.c
 )
 list(TRANSFORM MICROPY_SOURCE_PORT PREPEND ${MICROPY_PORT_DIR}/)
 list(APPEND MICROPY_SOURCE_PORT ${CMAKE_BINARY_DIR}/pins.c)
@@ -212,6 +215,7 @@ list(APPEND IDF_COMPONENTS
     nvs_flash
     sdmmc
     soc
+    spiffs
     spi_flash
     ulp
     usb
@@ -255,7 +259,8 @@ idf_component_register(
         ${MICROPY_INC_USERMOD}
         ${MICROPY_INC_TINYUSB}
         ${MICROPY_PORT_DIR}
-        ${MICROPY_PORT_DIR}/zeno_modules/zeno_lcd
+        ${MICROPY_PORT_DIR}/zeno_modules/zenotft
+        ${MICROPY_PORT_DIR}/zeno_modules/zenotft/vendor
         ${MICROPY_BOARD_DIR}
         ${CMAKE_BINARY_DIR}
     LDFRAGMENTS
@@ -369,4 +374,29 @@ add_custom_command(
         ${GEN_PINS_PREFIX}
     VERBATIM
     COMMAND_EXPAND_LISTS
+)
+
+
+# --- zenotft build settings (replaces the Kconfig menu of the original project) ---
+target_compile_definitions(${MICROPY_TARGET} PRIVATE
+    MODULE_ZENOTFT_ENABLED=1
+    CONFIG_ILI9488=1
+    CONFIG_INTERFACE_REG=1
+    CONFIG_INTERFACE_GPIO=0
+    CONFIG_INTERFACE_I2S=0
+    CONFIG_CUSTOM_GPIO_CONFIG=1
+    CONFIG_D0_GPIO=zeno_pins.d0
+    CONFIG_D1_GPIO=zeno_pins.d1
+    CONFIG_D2_GPIO=zeno_pins.d2
+    CONFIG_D3_GPIO=zeno_pins.d3
+    CONFIG_D4_GPIO=zeno_pins.d4
+    CONFIG_D5_GPIO=zeno_pins.d5
+    CONFIG_D6_GPIO=zeno_pins.d6
+    CONFIG_D7_GPIO=zeno_pins.d7
+    CONFIG_WR_GPIO=zeno_pins.wr
+    CONFIG_RD_GPIO=zeno_pins.rd
+    CONFIG_RS_GPIO=zeno_pins.rs
+    CONFIG_CS_GPIO=zeno_pins.cs
+    CONFIG_RESET_GPIO=zeno_pins.rst
+    CONFIG_JD_USE_ROM=1
 )

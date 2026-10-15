@@ -1,0 +1,8 @@
+# Append to your board sdkconfig (or pass via SDKCONFIG_DEFAULTS) when building.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-16MiB-zeno.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions-16MiB-zeno.csv"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+# Defaults the SPIFFS image tool below assumes (page 256, block 4096, name length 32)
+CONFIG_SPIFFS_PAGE_SIZE=256
+CONFIG_SPIFFS_OBJ_NAME_LEN=32
