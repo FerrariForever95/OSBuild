@@ -34,6 +34,7 @@ static TFT_t dev;
 static bool g_ready = false;
 static bool g_touch_ready = false;
 static int g_w = 320, g_h = 480;
+static int g_nw = 320, g_nh = 480;   /* native portrait size given to init() */
 
 #define FONT_SLOTS 4
 static FontxFile g_fonts[FONT_SLOTS][2];
@@ -80,6 +81,9 @@ static mp_obj_t mplcd_init(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw
         mp_raise_ValueError(MP_ERROR_TEXT("ILI9488 panel is at most 320x480"));
     }
 
+    g_nw = g_w;
+    g_nh = g_h;
+
     memset(&dev, 0, sizeof(dev));
     esp_err_t err = lcd_interface_cfg(&dev);
     if (err != ESP_OK) {
@@ -114,6 +118,40 @@ static mp_obj_t mplcd_size(void) {
     return mp_obj_new_tuple(2, t);
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(mplcd_size_obj, mplcd_size);
+
+/* rotation(r, madctl=None) -> (width, height)
+ * r: 0 = portrait (init default, MADCTL 0x98), 1 = landscape (0x38), 2 = portrait flipped (0x58),
+ *    3 = landscape flipped (0xF8). madctl= overrides the register byte; its MV bit (0x20) decides
+ *    whether width and height are exchanged. Clear the screen afterwards. */
+static mp_obj_t mplcd_rotation(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_r, ARG_madctl };
+    static const mp_arg_t allowed[] = {
+        { MP_QSTR_r,      MP_ARG_INT, { .u_int = 0 } },
+        { MP_QSTR_madctl, MP_ARG_KW_ONLY | MP_ARG_OBJ, { .u_obj = mp_const_none } },
+    };
+    mp_arg_val_t a[MP_ARRAY_SIZE(allowed)];
+    mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed), allowed, a);
+    need_ready();
+    static const uint8_t madctl_tab[4] = { 0x98, 0x38, 0x58, 0xF8 };
+    int r = a[ARG_r].u_int;
+    if (r < 0 || r > 3) {
+        mp_raise_ValueError(MP_ERROR_TEXT("rotation must be 0..3"));
+    }
+    uint8_t m = madctl_tab[r];
+    if (a[ARG_madctl].u_obj != mp_const_none) {
+        m = (uint8_t)mp_obj_get_int(a[ARG_madctl].u_obj);
+    }
+    bool swap = (m & 0x20) != 0;
+    g_w = swap ? g_nh : g_nw;
+    g_h = swap ? g_nw : g_nh;
+    dev._width = g_w;
+    dev._height = g_h;
+    lcd_write_comm_byte(&dev, 0x36);
+    lcd_write_data_byte(&dev, m);
+    mp_obj_t t[2] = { mp_obj_new_int(g_w), mp_obj_new_int(g_h) };
+    return mp_obj_new_tuple(2, t);
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(mplcd_rotation_obj, 0, mplcd_rotation);
 
 static mp_obj_t mplcd_color565(mp_obj_t r, mp_obj_t g, mp_obj_t b) {
     return mp_obj_new_int(rgb565_conv(mp_obj_get_int(r) & 0xFF, mp_obj_get_int(g) & 0xFF, mp_obj_get_int(b) & 0xFF));
@@ -704,6 +742,7 @@ static const mp_rom_map_elem_t mplcd_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_display),          MP_ROM_PTR(&mplcd_display_obj) },
     { MP_ROM_QSTR(MP_QSTR_invert),           MP_ROM_PTR(&mplcd_invert_obj) },
     { MP_ROM_QSTR(MP_QSTR_size),             MP_ROM_PTR(&mplcd_size_obj) },
+    { MP_ROM_QSTR(MP_QSTR_rotation),         MP_ROM_PTR(&mplcd_rotation_obj) },
     { MP_ROM_QSTR(MP_QSTR_color565),         MP_ROM_PTR(&mplcd_color565_obj) },
     { MP_ROM_QSTR(MP_QSTR_fill),             MP_ROM_PTR(&mplcd_fill_obj) },
     { MP_ROM_QSTR(MP_QSTR_fill_rect),        MP_ROM_PTR(&mplcd_fill_rect_obj) },
