@@ -1,4 +1,4 @@
-#include "zeno_config.h"
+#include "lcd_config.h"
 #include <stdio.h>
 #include <stdbool.h>
 #include <inttypes.h>

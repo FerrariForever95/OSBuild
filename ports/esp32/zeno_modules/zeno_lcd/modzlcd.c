@@ -1,6 +1,6 @@
-#include "vendor/zeno_config.h"
+#include "vendor/lcd_config.h"
 /*
- * zenotft - MicroPython binding for the nopnop2002/esp-idf-parallel-tft core (MIT)
+ * lcd - MicroPython binding for the nopnop2002/esp-idf-parallel-tft core (MIT)
  * ILI9488 320x480, 8-bit parallel (REGISTER I/O), shared-pin 4-wire resistive touch.
  *
  * NOT compiled or run by the author of this file: first build may need small fixes.
@@ -29,16 +29,11 @@
 #include "vendor/pngle.h"
 #include "vendor/decode_png.h"
 #include "vendor/decode_jpeg.h"
-#include "vendor/zeno_pins.h"
-
-zeno_pins_t zeno_pins;
 
 static TFT_t dev;
 static bool g_ready = false;
 static bool g_touch_ready = false;
 static int g_w = 320, g_h = 480;
-static int g_bl = -1;
-static bool g_bl_active_high = true;
 
 #define FONT_SLOTS 4
 static FontxFile g_fonts[FONT_SLOTS][2];
@@ -51,7 +46,7 @@ static bool g_mounted = false;
 
 static void need_ready(void) {
     if (!g_ready) {
-        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("call zenotft.init() first"));
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("call lcd.init() first"));
     }
 }
 
@@ -65,20 +60,12 @@ static int clampi(int v, int lo, int hi) {
 
 /* ------------------------------------------------------------------ display */
 
-static mp_obj_t zeno_init(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_d, ARG_wr, ARG_rd, ARG_rs, ARG_cs, ARG_rst, ARG_bl, ARG_width, ARG_height, ARG_invert, ARG_bl_active_high };
+static mp_obj_t mplcd_init(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_width, ARG_height, ARG_invert };
     static const mp_arg_t allowed[] = {
-        { MP_QSTR_d,              MP_ARG_REQUIRED | MP_ARG_OBJ },
-        { MP_QSTR_wr,             MP_ARG_REQUIRED | MP_ARG_INT },
-        { MP_QSTR_rd,             MP_ARG_REQUIRED | MP_ARG_INT },
-        { MP_QSTR_rs,             MP_ARG_REQUIRED | MP_ARG_INT },
-        { MP_QSTR_cs,             MP_ARG_REQUIRED | MP_ARG_INT },
-        { MP_QSTR_rst,            MP_ARG_REQUIRED | MP_ARG_INT },
-        { MP_QSTR_bl,             MP_ARG_OBJ,  { .u_obj = mp_const_none } },
-        { MP_QSTR_width,          MP_ARG_INT,  { .u_int = 320 } },
-        { MP_QSTR_height,         MP_ARG_INT,  { .u_int = 480 } },
-        { MP_QSTR_invert,         MP_ARG_BOOL, { .u_bool = false } },
-        { MP_QSTR_bl_active_high, MP_ARG_BOOL, { .u_bool = true } },
+        { MP_QSTR_width,  MP_ARG_INT,  { .u_int = 320 } },
+        { MP_QSTR_height, MP_ARG_INT,  { .u_int = 480 } },
+        { MP_QSTR_invert, MP_ARG_BOOL, { .u_bool = false } },
     };
     mp_arg_val_t a[MP_ARRAY_SIZE(allowed)];
     mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed), allowed, a);
@@ -87,45 +74,6 @@ static mp_obj_t zeno_init(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_
         mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("already initialised"));
     }
 
-    size_t len;
-    mp_obj_t *items;
-    mp_obj_get_array(a[ARG_d].u_obj, &len, &items);
-    if (len != 8) {
-        mp_raise_ValueError(MP_ERROR_TEXT("d must have 8 GPIO numbers (D0..D7)"));
-    }
-    int *dp[8] = { &zeno_pins.d0, &zeno_pins.d1, &zeno_pins.d2, &zeno_pins.d3,
-                   &zeno_pins.d4, &zeno_pins.d5, &zeno_pins.d6, &zeno_pins.d7 };
-    for (int i = 0; i < 8; i++) {
-        *dp[i] = mp_obj_get_int(items[i]);
-    }
-    zeno_pins.wr = a[ARG_wr].u_int;
-    zeno_pins.rd = a[ARG_rd].u_int;
-    zeno_pins.rs = a[ARG_rs].u_int;
-    zeno_pins.cs = a[ARG_cs].u_int;
-    zeno_pins.rst = a[ARG_rst].u_int;
-
-    int all[13] = { zeno_pins.d0, zeno_pins.d1, zeno_pins.d2, zeno_pins.d3, zeno_pins.d4,
-                    zeno_pins.d5, zeno_pins.d6, zeno_pins.d7, zeno_pins.wr, zeno_pins.rd,
-                    zeno_pins.rs, zeno_pins.cs, zeno_pins.rst };
-    for (int i = 0; i < 13; i++) {
-        if (all[i] < 0 || all[i] > 48) {
-            mp_raise_ValueError(MP_ERROR_TEXT("GPIO number out of range"));
-        }
-        for (int j = i + 1; j < 13; j++) {
-            if (all[i] == all[j]) {
-                mp_raise_ValueError(MP_ERROR_TEXT("duplicate GPIO in pin map"));
-            }
-        }
-    }
-    if (a[ARG_bl].u_obj != mp_const_none) {
-        g_bl = mp_obj_get_int(a[ARG_bl].u_obj);
-        for (int i = 0; i < 13; i++) {
-            if (all[i] == g_bl) {
-                mp_raise_ValueError(MP_ERROR_TEXT("backlight GPIO collides with a bus pin"));
-            }
-        }
-    }
-    g_bl_active_high = a[ARG_bl_active_high].u_bool;
     g_w = a[ARG_width].u_int;
     g_h = a[ARG_height].u_int;
     if (g_w < 1 || g_w > 320 || g_h < 1 || g_h > 480) {
@@ -142,60 +90,44 @@ static mp_obj_t zeno_init(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_
         lcdInversionOn(&dev);
     }
     lcdFillScreen(&dev, 0x0000);
-
-    if (g_bl >= 0) {
-        gpio_reset_pin(g_bl);
-        gpio_set_direction(g_bl, GPIO_MODE_OUTPUT);
-        gpio_set_level(g_bl, g_bl_active_high ? 1 : 0);
-    }
     g_ready = true;
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_KW(zeno_init_obj, 0, zeno_init);
+static MP_DEFINE_CONST_FUN_OBJ_KW(mplcd_init_obj, 0, mplcd_init);
 
-static mp_obj_t zeno_backlight(mp_obj_t on) {
-    if (g_bl < 0) {
-        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("no backlight pin given to init()"));
-    }
-    bool v = mp_obj_is_true(on);
-    gpio_set_level(g_bl, (v == g_bl_active_high) ? 1 : 0);
-    return mp_const_none;
-}
-static MP_DEFINE_CONST_FUN_OBJ_1(zeno_backlight_obj, zeno_backlight);
-
-static mp_obj_t zeno_display(mp_obj_t on) {
+static mp_obj_t mplcd_display(mp_obj_t on) {
     need_ready();
     if (mp_obj_is_true(on)) lcdDisplayOn(&dev); else lcdDisplayOff(&dev);
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_1(zeno_display_obj, zeno_display);
+static MP_DEFINE_CONST_FUN_OBJ_1(mplcd_display_obj, mplcd_display);
 
-static mp_obj_t zeno_invert(mp_obj_t on) {
+static mp_obj_t mplcd_invert(mp_obj_t on) {
     need_ready();
     if (mp_obj_is_true(on)) lcdInversionOn(&dev); else lcdInversionOff(&dev);
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_1(zeno_invert_obj, zeno_invert);
+static MP_DEFINE_CONST_FUN_OBJ_1(mplcd_invert_obj, mplcd_invert);
 
-static mp_obj_t zeno_size(void) {
+static mp_obj_t mplcd_size(void) {
     mp_obj_t t[2] = { mp_obj_new_int(g_w), mp_obj_new_int(g_h) };
     return mp_obj_new_tuple(2, t);
 }
-static MP_DEFINE_CONST_FUN_OBJ_0(zeno_size_obj, zeno_size);
+static MP_DEFINE_CONST_FUN_OBJ_0(mplcd_size_obj, mplcd_size);
 
-static mp_obj_t zeno_color565(mp_obj_t r, mp_obj_t g, mp_obj_t b) {
+static mp_obj_t mplcd_color565(mp_obj_t r, mp_obj_t g, mp_obj_t b) {
     return mp_obj_new_int(rgb565_conv(mp_obj_get_int(r) & 0xFF, mp_obj_get_int(g) & 0xFF, mp_obj_get_int(b) & 0xFF));
 }
-static MP_DEFINE_CONST_FUN_OBJ_3(zeno_color565_obj, zeno_color565);
+static MP_DEFINE_CONST_FUN_OBJ_3(mplcd_color565_obj, mplcd_color565);
 
-static mp_obj_t zeno_fill(mp_obj_t color) {
+static mp_obj_t mplcd_fill(mp_obj_t color) {
     need_ready();
     lcdFillScreen(&dev, (uint16_t)mp_obj_get_int(color));
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_1(zeno_fill_obj, zeno_fill);
+static MP_DEFINE_CONST_FUN_OBJ_1(mplcd_fill_obj, mplcd_fill);
 
-static mp_obj_t zeno_fill_rect(size_t n_args, const mp_obj_t *args) {
+static mp_obj_t mplcd_fill_rect(size_t n_args, const mp_obj_t *args) {
     need_ready();
     int x = mp_obj_get_int(args[0]), y = mp_obj_get_int(args[1]);
     int w = mp_obj_get_int(args[2]), h = mp_obj_get_int(args[3]);
@@ -207,9 +139,9 @@ static mp_obj_t zeno_fill_rect(size_t n_args, const mp_obj_t *args) {
     lcdDrawFillRect(&dev, x1, y1, x2, y2, c);
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(zeno_fill_rect_obj, 5, 5, zeno_fill_rect);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mplcd_fill_rect_obj, 5, 5, mplcd_fill_rect);
 
-static mp_obj_t zeno_pixel(mp_obj_t xo, mp_obj_t yo, mp_obj_t co) {
+static mp_obj_t mplcd_pixel(mp_obj_t xo, mp_obj_t yo, mp_obj_t co) {
     need_ready();
     int x = mp_obj_get_int(xo), y = mp_obj_get_int(yo);
     if (x >= 0 && y >= 0 && x < g_w && y < g_h) {
@@ -217,10 +149,10 @@ static mp_obj_t zeno_pixel(mp_obj_t xo, mp_obj_t yo, mp_obj_t co) {
     }
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_3(zeno_pixel_obj, zeno_pixel);
+static MP_DEFINE_CONST_FUN_OBJ_3(mplcd_pixel_obj, mplcd_pixel);
 
 /* blit(x, y, w, h, buf): buf = native-endian RGB565, w*h*2 bytes (same layout as framebuf.RGB565) */
-static mp_obj_t zeno_blit(size_t n_args, const mp_obj_t *args) {
+static mp_obj_t mplcd_blit(size_t n_args, const mp_obj_t *args) {
     need_ready();
     int x = mp_obj_get_int(args[0]), y = mp_obj_get_int(args[1]);
     int w = mp_obj_get_int(args[2]), h = mp_obj_get_int(args[3]);
@@ -245,11 +177,11 @@ static mp_obj_t zeno_blit(size_t n_args, const mp_obj_t *args) {
     }
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(zeno_blit_obj, 5, 5, zeno_blit);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mplcd_blit_obj, 5, 5, mplcd_blit);
 
 /* ------------------------------------------------- assets partition (SPIFFS) */
 
-static mp_obj_t zeno_mount(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+static mp_obj_t mplcd_mount(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_label, ARG_base, ARG_max_files };
     static const mp_arg_t allowed[] = {
         { MP_QSTR_label,     MP_ARG_OBJ, { .u_obj = MP_OBJ_NULL } },
@@ -290,9 +222,9 @@ static mp_obj_t zeno_mount(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw
     mp_obj_t t[2] = { mp_obj_new_int_from_uint(total), mp_obj_new_int_from_uint(used) };
     return mp_obj_new_tuple(2, t);
 }
-static MP_DEFINE_CONST_FUN_OBJ_KW(zeno_mount_obj, 0, zeno_mount);
+static MP_DEFINE_CONST_FUN_OBJ_KW(mplcd_mount_obj, 0, mplcd_mount);
 
-static mp_obj_t zeno_unmount(void) {
+static mp_obj_t mplcd_unmount(void) {
     if (g_mounted) {
         for (int i = 0; i < FONT_SLOTS; i++) {
             if (g_font_used[i]) {
@@ -305,7 +237,7 @@ static mp_obj_t zeno_unmount(void) {
     }
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_0(zeno_unmount_obj, zeno_unmount);
+static MP_DEFINE_CONST_FUN_OBJ_0(mplcd_unmount_obj, mplcd_unmount);
 
 /* -------------------------------------------------------------------- fonts */
 
@@ -318,7 +250,7 @@ static int get_slot(mp_obj_t o) {
 }
 
 /* font_load(slot, path) -> (glyph_w, glyph_h).  path e.g. "/assets/ILGH16XB.FNT" (FONTX2 file) */
-static mp_obj_t zeno_font_load(mp_obj_t slot_o, mp_obj_t path_o) {
+static mp_obj_t mplcd_font_load(mp_obj_t slot_o, mp_obj_t path_o) {
     int slot = get_slot(slot_o);
     const char *p = mp_obj_str_get_str(path_o);
     if (strlen(p) >= sizeof(g_font_path[0])) {
@@ -338,10 +270,10 @@ static mp_obj_t zeno_font_load(mp_obj_t slot_o, mp_obj_t path_o) {
                       mp_obj_new_int(getFortHeight(&g_fonts[slot][0])) };
     return mp_obj_new_tuple(2, t);
 }
-static MP_DEFINE_CONST_FUN_OBJ_2(zeno_font_load_obj, zeno_font_load);
+static MP_DEFINE_CONST_FUN_OBJ_2(mplcd_font_load_obj, mplcd_font_load);
 
 /* text(slot, x, y, str, color, direction=0) -> next x.  direction 0..3 = 0/90/180/270 deg (repo semantics) */
-static mp_obj_t zeno_text(size_t n_args, const mp_obj_t *args) {
+static mp_obj_t mplcd_text(size_t n_args, const mp_obj_t *args) {
     need_ready();
     int slot = get_slot(args[0]);
     if (!g_font_used[slot]) {
@@ -358,16 +290,16 @@ static mp_obj_t zeno_text(size_t n_args, const mp_obj_t *args) {
     int nx = lcdDrawString(&dev, g_fonts[slot], x, y, (uint8_t *)(uintptr_t)s, color);
     return mp_obj_new_int(nx);
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(zeno_text_obj, 5, 6, zeno_text);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mplcd_text_obj, 5, 6, mplcd_text);
 
 /* font_bg(color) fills glyph background; font_bg(None) makes it transparent */
-static mp_obj_t zeno_font_bg(mp_obj_t c) {
+static mp_obj_t mplcd_font_bg(mp_obj_t c) {
     need_ready();
     if (c == mp_const_none) lcdUnsetFontFill(&dev);
     else lcdSetFontFill(&dev, (uint16_t)mp_obj_get_int(c));
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_1(zeno_font_bg_obj, zeno_font_bg);
+static MP_DEFINE_CONST_FUN_OBJ_1(mplcd_font_bg_obj, mplcd_font_bg);
 
 /* --------------------------------------------------------------- PNG / JPEG */
 
@@ -397,7 +329,7 @@ static void place(size_t n_args, const mp_obj_t *args, int iw, int ih, int *x0, 
 }
 
 /* png(path, x=None, y=None): top-left position; None = centered. Large images are shrunk to fit. */
-static mp_obj_t zeno_png(size_t n_args, const mp_obj_t *args) {
+static mp_obj_t mplcd_png(size_t n_args, const mp_obj_t *args) {
     need_ready();
     const char *path = mp_obj_str_get_str(args[0]);
     FILE *fp = fopen(path, "rb");
@@ -449,10 +381,10 @@ static mp_obj_t zeno_png(size_t n_args, const mp_obj_t *args) {
     pngle_destroy(pngle, g_w, g_h);
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(zeno_png_obj, 1, 3, zeno_png);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mplcd_png_obj, 1, 3, mplcd_png);
 
 /* jpeg(path, x=None, y=None): baseline JPEG only (no progressive). Shrunk by 1/2,1/4,1/8 to fit. */
-static mp_obj_t zeno_jpeg(size_t n_args, const mp_obj_t *args) {
+static mp_obj_t mplcd_jpeg(size_t n_args, const mp_obj_t *args) {
     need_ready();
     const char *path = mp_obj_str_get_str(args[0]);
     pixel_jpeg **pixels = NULL;
@@ -467,7 +399,7 @@ static mp_obj_t zeno_jpeg(size_t n_args, const mp_obj_t *args) {
     release_image(&pixels, g_w, g_h);
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(zeno_jpeg_obj, 1, 3, zeno_jpeg);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mplcd_jpeg_obj, 1, 3, mplcd_jpeg);
 
 /* -------------------------------------------------------------------- touch */
 
@@ -579,14 +511,14 @@ static bool map_axis(int raw, int r0, int p0, int r1, int p1, int size, int *out
     return true;
 }
 
-/* touch_init(adc_yp=, adc_xm=, xp=, xm=, yp=, ym=)
- * adc_yp / adc_xm: ADC1 channel numbers (ESP32-S3: channel = GPIO - 1) of the pins wired to the Y+ and X- electrodes.
- * xp/xm/yp/ym: GPIOs driving the electrodes; default to the D0 / RS / CS / D1 mapping given to init(). */
-static mp_obj_t zeno_touch_init(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+/* touch_init()   - electrode pins and ADC1 channels come from lcd_pins.h:
+ *   XP = D0, YM = D1, XM = RS, YP = CS;  ADC channel (ESP32-S3) = GPIO - 1 of YP (CS) and XM (RS).
+ * Optional keyword overrides: adc_yp=, adc_xm=, xp=, xm=, yp=, ym= */
+static mp_obj_t mplcd_touch_init(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_adc_yp, ARG_adc_xm, ARG_xp, ARG_xm, ARG_yp, ARG_ym };
     static const mp_arg_t allowed[] = {
-        { MP_QSTR_adc_yp, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_INT },
-        { MP_QSTR_adc_xm, MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_INT },
+        { MP_QSTR_adc_yp, MP_ARG_KW_ONLY | MP_ARG_INT, { .u_int = -1 } },
+        { MP_QSTR_adc_xm, MP_ARG_KW_ONLY | MP_ARG_INT, { .u_int = -1 } },
         { MP_QSTR_xp,     MP_ARG_KW_ONLY | MP_ARG_INT, { .u_int = -1 } },
         { MP_QSTR_xm,     MP_ARG_KW_ONLY | MP_ARG_INT, { .u_int = -1 } },
         { MP_QSTR_yp,     MP_ARG_KW_ONLY | MP_ARG_INT, { .u_int = -1 } },
@@ -598,21 +530,22 @@ static mp_obj_t zeno_touch_init(size_t n_args, const mp_obj_t *pos_args, mp_map_
     if (g_touch_ready) {
         mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("touch already initialised"));
     }
-    int adc_yp = a[ARG_adc_yp].u_int, adc_xm = a[ARG_adc_xm].u_int;
+    int xp = a[ARG_xp].u_int >= 0 ? a[ARG_xp].u_int : LCD_PIN_D0;
+    int xm = a[ARG_xm].u_int >= 0 ? a[ARG_xm].u_int : LCD_PIN_RS;
+    int yp = a[ARG_yp].u_int >= 0 ? a[ARG_yp].u_int : LCD_PIN_CS;
+    int ym = a[ARG_ym].u_int >= 0 ? a[ARG_ym].u_int : LCD_PIN_D1;
+    int adc_yp = a[ARG_adc_yp].u_int >= 0 ? a[ARG_adc_yp].u_int : yp - 1;
+    int adc_xm = a[ARG_adc_xm].u_int >= 0 ? a[ARG_adc_xm].u_int : xm - 1;
     if (adc_yp < 0 || adc_yp > 9 || adc_xm < 0 || adc_xm > 9) {
-        mp_raise_ValueError(MP_ERROR_TEXT("ADC1 channel must be 0..9 (GPIO1..10)"));
+        mp_raise_ValueError(MP_ERROR_TEXT("ADC1 channel must be 0..9 (GPIO1..10): CS/RS must be on ADC1"));
     }
-    int xp = a[ARG_xp].u_int >= 0 ? a[ARG_xp].u_int : zeno_pins.d0;
-    int xm = a[ARG_xm].u_int >= 0 ? a[ARG_xm].u_int : zeno_pins.rs;
-    int yp = a[ARG_yp].u_int >= 0 ? a[ARG_yp].u_int : zeno_pins.cs;
-    int ym = a[ARG_ym].u_int >= 0 ? a[ARG_ym].u_int : zeno_pins.d1;
     touch_interface_cfg(&dev, adc_yp, adc_xm, xp, xm, yp, ym);   /* aborts if ADC1 is already claimed */
     touch_release_bus();
     touch_state_reset();
     g_touch_ready = true;
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_KW(zeno_touch_init_obj, 0, zeno_touch_init);
+static MP_DEFINE_CONST_FUN_OBJ_KW(mplcd_touch_init_obj, 0, mplcd_touch_init);
 
 static mp_obj_t tc_dict(void) {
     mp_obj_t d = mp_obj_new_dict(11);
@@ -631,7 +564,7 @@ static mp_obj_t tc_dict(void) {
 }
 
 /* touch_config(**kw) sets any of the tuning variables; always returns the current values as a dict. */
-static mp_obj_t zeno_touch_config(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+static mp_obj_t mplcd_touch_config(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { A_samples, A_tolerance, A_settle_us, A_rail_lo, A_rail_hi, A_z_min, A_z_max, A_jump, A_confirm, A_release, A_edge_px };
     static const mp_arg_t allowed[] = {
         { MP_QSTR_samples,   MP_ARG_KW_ONLY | MP_ARG_OBJ, { .u_obj = mp_const_none } },
@@ -665,13 +598,13 @@ static mp_obj_t zeno_touch_config(size_t n_args, const mp_obj_t *pos_args, mp_ma
     touch_state_reset();
     return tc_dict();
 }
-static MP_DEFINE_CONST_FUN_OBJ_KW(zeno_touch_config_obj, 0, zeno_touch_config);
+static MP_DEFINE_CONST_FUN_OBJ_KW(mplcd_touch_config_obj, 0, mplcd_touch_config);
 
 /* touch_calibration()                                  -> current tuple
  * touch_calibration(xr0,xp0, xr1,xp1, yr0,yp0, yr1,yp1 [, swap])
  *   two (raw, pixel) reference points per axis; maps linearly and extrapolates to the full screen.
  *   raw values are the numbers read_raw() returns. With swap=True the "x" pair is applied to raw Y and vice versa. */
-static mp_obj_t zeno_touch_calibration(size_t n_args, const mp_obj_t *args) {
+static mp_obj_t mplcd_touch_calibration(size_t n_args, const mp_obj_t *args) {
     if (n_args == 0) {
         if (!cal.set) return mp_const_none;
         mp_obj_t t[9] = { mp_obj_new_int(cal.xr0), mp_obj_new_int(cal.xp0), mp_obj_new_int(cal.xr1), mp_obj_new_int(cal.xp1),
@@ -694,21 +627,21 @@ static mp_obj_t zeno_touch_calibration(size_t n_args, const mp_obj_t *args) {
     touch_state_reset();
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(zeno_touch_calibration_obj, 0, 9, zeno_touch_calibration);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mplcd_touch_calibration_obj, 0, 9, mplcd_touch_calibration);
 
 /* read_raw() -> (x, y, z) unfiltered; x/y are -1 when the two samples disagreed by more than `tolerance`.
  * x and y are sums of two ADC reads (0..8190); z = |Y+ - X-| (bigger = harder press). Use this for calibration/tuning. */
-static mp_obj_t zeno_read_raw(void) {
+static mp_obj_t mplcd_read_raw(void) {
     need_touch();
     raw_t r;
     measure_raw(&r);
     mp_obj_t t[3] = { mp_obj_new_int(r.x), mp_obj_new_int(r.y), mp_obj_new_int(r.z) };
     return mp_obj_new_tuple(3, t);
 }
-static MP_DEFINE_CONST_FUN_OBJ_0(zeno_read_raw_obj, zeno_read_raw);
+static MP_DEFINE_CONST_FUN_OBJ_0(mplcd_read_raw_obj, mplcd_read_raw);
 
 /* read_touch() -> (x, y) in screen pixels, or None when nothing (valid) is pressed. Call at ~50-200 Hz. */
-static mp_obj_t zeno_read_touch(void) {
+static mp_obj_t mplcd_read_touch(void) {
     need_touch();
     if (!cal.set) {
         mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("not calibrated: use read_raw() then touch_calibration()"));
@@ -761,40 +694,39 @@ static mp_obj_t zeno_read_touch(void) {
     mp_obj_t t[2] = { mp_obj_new_int(sx), mp_obj_new_int(sy) };
     return mp_obj_new_tuple(2, t);
 }
-static MP_DEFINE_CONST_FUN_OBJ_0(zeno_read_touch_obj, zeno_read_touch);
+static MP_DEFINE_CONST_FUN_OBJ_0(mplcd_read_touch_obj, mplcd_read_touch);
 
 /* ------------------------------------------------------------------- module */
 
-static const mp_rom_map_elem_t zeno_globals_table[] = {
-    { MP_ROM_QSTR(MP_QSTR___name__),         MP_ROM_QSTR(MP_QSTR_zenotft) },
-    { MP_ROM_QSTR(MP_QSTR_init),             MP_ROM_PTR(&zeno_init_obj) },
-    { MP_ROM_QSTR(MP_QSTR_backlight),        MP_ROM_PTR(&zeno_backlight_obj) },
-    { MP_ROM_QSTR(MP_QSTR_display),          MP_ROM_PTR(&zeno_display_obj) },
-    { MP_ROM_QSTR(MP_QSTR_invert),           MP_ROM_PTR(&zeno_invert_obj) },
-    { MP_ROM_QSTR(MP_QSTR_size),             MP_ROM_PTR(&zeno_size_obj) },
-    { MP_ROM_QSTR(MP_QSTR_color565),         MP_ROM_PTR(&zeno_color565_obj) },
-    { MP_ROM_QSTR(MP_QSTR_fill),             MP_ROM_PTR(&zeno_fill_obj) },
-    { MP_ROM_QSTR(MP_QSTR_fill_rect),        MP_ROM_PTR(&zeno_fill_rect_obj) },
-    { MP_ROM_QSTR(MP_QSTR_pixel),            MP_ROM_PTR(&zeno_pixel_obj) },
-    { MP_ROM_QSTR(MP_QSTR_blit),             MP_ROM_PTR(&zeno_blit_obj) },
-    { MP_ROM_QSTR(MP_QSTR_mount),            MP_ROM_PTR(&zeno_mount_obj) },
-    { MP_ROM_QSTR(MP_QSTR_unmount),          MP_ROM_PTR(&zeno_unmount_obj) },
-    { MP_ROM_QSTR(MP_QSTR_font_load),        MP_ROM_PTR(&zeno_font_load_obj) },
-    { MP_ROM_QSTR(MP_QSTR_font_bg),          MP_ROM_PTR(&zeno_font_bg_obj) },
-    { MP_ROM_QSTR(MP_QSTR_text),             MP_ROM_PTR(&zeno_text_obj) },
-    { MP_ROM_QSTR(MP_QSTR_png),              MP_ROM_PTR(&zeno_png_obj) },
-    { MP_ROM_QSTR(MP_QSTR_jpeg),             MP_ROM_PTR(&zeno_jpeg_obj) },
-    { MP_ROM_QSTR(MP_QSTR_touch_init),       MP_ROM_PTR(&zeno_touch_init_obj) },
-    { MP_ROM_QSTR(MP_QSTR_touch_config),     MP_ROM_PTR(&zeno_touch_config_obj) },
-    { MP_ROM_QSTR(MP_QSTR_touch_calibration), MP_ROM_PTR(&zeno_touch_calibration_obj) },
-    { MP_ROM_QSTR(MP_QSTR_read_raw),         MP_ROM_PTR(&zeno_read_raw_obj) },
-    { MP_ROM_QSTR(MP_QSTR_read_touch),       MP_ROM_PTR(&zeno_read_touch_obj) },
+static const mp_rom_map_elem_t mplcd_globals_table[] = {
+    { MP_ROM_QSTR(MP_QSTR___name__),         MP_ROM_QSTR(MP_QSTR_lcd) },
+    { MP_ROM_QSTR(MP_QSTR_init),             MP_ROM_PTR(&mplcd_init_obj) },
+    { MP_ROM_QSTR(MP_QSTR_display),          MP_ROM_PTR(&mplcd_display_obj) },
+    { MP_ROM_QSTR(MP_QSTR_invert),           MP_ROM_PTR(&mplcd_invert_obj) },
+    { MP_ROM_QSTR(MP_QSTR_size),             MP_ROM_PTR(&mplcd_size_obj) },
+    { MP_ROM_QSTR(MP_QSTR_color565),         MP_ROM_PTR(&mplcd_color565_obj) },
+    { MP_ROM_QSTR(MP_QSTR_fill),             MP_ROM_PTR(&mplcd_fill_obj) },
+    { MP_ROM_QSTR(MP_QSTR_fill_rect),        MP_ROM_PTR(&mplcd_fill_rect_obj) },
+    { MP_ROM_QSTR(MP_QSTR_pixel),            MP_ROM_PTR(&mplcd_pixel_obj) },
+    { MP_ROM_QSTR(MP_QSTR_blit),             MP_ROM_PTR(&mplcd_blit_obj) },
+    { MP_ROM_QSTR(MP_QSTR_mount),            MP_ROM_PTR(&mplcd_mount_obj) },
+    { MP_ROM_QSTR(MP_QSTR_unmount),          MP_ROM_PTR(&mplcd_unmount_obj) },
+    { MP_ROM_QSTR(MP_QSTR_font_load),        MP_ROM_PTR(&mplcd_font_load_obj) },
+    { MP_ROM_QSTR(MP_QSTR_font_bg),          MP_ROM_PTR(&mplcd_font_bg_obj) },
+    { MP_ROM_QSTR(MP_QSTR_text),             MP_ROM_PTR(&mplcd_text_obj) },
+    { MP_ROM_QSTR(MP_QSTR_png),              MP_ROM_PTR(&mplcd_png_obj) },
+    { MP_ROM_QSTR(MP_QSTR_jpeg),             MP_ROM_PTR(&mplcd_jpeg_obj) },
+    { MP_ROM_QSTR(MP_QSTR_touch_init),       MP_ROM_PTR(&mplcd_touch_init_obj) },
+    { MP_ROM_QSTR(MP_QSTR_touch_config),     MP_ROM_PTR(&mplcd_touch_config_obj) },
+    { MP_ROM_QSTR(MP_QSTR_touch_calibration), MP_ROM_PTR(&mplcd_touch_calibration_obj) },
+    { MP_ROM_QSTR(MP_QSTR_read_raw),         MP_ROM_PTR(&mplcd_read_raw_obj) },
+    { MP_ROM_QSTR(MP_QSTR_read_touch),       MP_ROM_PTR(&mplcd_read_touch_obj) },
 };
-static MP_DEFINE_CONST_DICT(zeno_globals, zeno_globals_table);
+static MP_DEFINE_CONST_DICT(mplcd_globals, mplcd_globals_table);
 
-const mp_obj_module_t zenotft_module = {
+const mp_obj_module_t lcd_module = {
     .base = { &mp_type_module },
-    .globals = (mp_obj_dict_t *)&zeno_globals,
+    .globals = (mp_obj_dict_t *)&mplcd_globals,
 };
 
-MP_REGISTER_MODULE(MP_QSTR_zenotft, zenotft_module);
+MP_REGISTER_MODULE(MP_QSTR_lcd, lcd_module);

@@ -1,4 +1,4 @@
-#include "zeno_config.h"
+#include "lcd_config.h"
 #include <stdio.h>
 #include <inttypes.h>
 #include "freertos/FreeRTOS.h"

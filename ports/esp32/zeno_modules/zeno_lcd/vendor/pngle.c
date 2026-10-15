@@ -1,4 +1,4 @@
-#include "zeno_config.h"
+#include "lcd_config.h"
 /*-
  * MIT License
  *

@@ -1,4 +1,4 @@
-#include "zeno_config.h"
+#include "lcd_config.h"
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -8,7 +8,6 @@
 #include "soc/soc.h"
 #include "soc/dport_reg.h"
 #include "lcd_com.h"
-#include "zeno_pins.h"  /* ZENO PATCH: runtime pin map */
 #if ESP_IDF_VERSION_MAJOR == 5 && CONFIG_INTERFACE_I2S
 #include "i2s_lcd_driver.h"
 #endif
