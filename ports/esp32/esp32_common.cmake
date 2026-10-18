@@ -150,24 +150,21 @@ list(APPEND MICROPY_SOURCE_PORT
 #   modili9488.c
 #   ili9488.c
 #   modlcd.c   # disabled: replaced by zeno_lcd (registers module "lcd")
-#    modcube.c
- #   modsphere.c
- #   modballs.c
-  #  modgyro.c
-   # modcar.c
-   # modsaturn.c
-   # modsolarsys.c
+#   modcube.c   # disabled: depends on old modlcd.c internals
+#   modsphere.c   # disabled: depends on old modlcd.c internals
+#   modballs.c   # disabled: depends on old modlcd.c internals
+ #   modgyro.c
+#    modcar.c
+#   modsaturn.c   # disabled: depends on old modlcd.c internals
+#   modsolarsys.c   # disabled: depends on old modlcd.c internals
 
-    # --- zeno_lcd: ILI9488 8-bit parallel + resistive touch (module "lcd") ---
+    # --- zeno_lcd: ILI9488 8-bit parallel + resistive touch (modules "lcd", "touch") ---
+    zeno_modules/zeno_lcd/lcd_bus.c
+    zeno_modules/zeno_lcd/ili9488_panel.c
+    zeno_modules/zeno_lcd/touch_drv.c
+    zeno_modules/zeno_lcd/touch_calib.c
     zeno_modules/zeno_lcd/modzlcd.c
-    zeno_modules/zeno_lcd/vendor/lcd_com.c
-    zeno_modules/zeno_lcd/vendor/lcd_lib.c
-    zeno_modules/zeno_lcd/vendor/ili9341.c
-    zeno_modules/zeno_lcd/vendor/ili9488.c
-    zeno_modules/zeno_lcd/vendor/fontx.c
-    zeno_modules/zeno_lcd/vendor/pngle.c
-    zeno_modules/zeno_lcd/vendor/decode_png.c
-    zeno_modules/zeno_lcd/vendor/decode_jpeg_v5.c
+    zeno_modules/zeno_lcd/modztouch.c
 )
 list(TRANSFORM MICROPY_SOURCE_PORT PREPEND ${MICROPY_PORT_DIR}/)
 list(APPEND MICROPY_SOURCE_PORT ${CMAKE_BINARY_DIR}/pins.c)
@@ -215,7 +212,6 @@ list(APPEND IDF_COMPONENTS
     nvs_flash
     sdmmc
     soc
-    spiffs
     spi_flash
     ulp
     usb
@@ -260,7 +256,6 @@ idf_component_register(
         ${MICROPY_INC_TINYUSB}
         ${MICROPY_PORT_DIR}
         ${MICROPY_PORT_DIR}/zeno_modules/zeno_lcd
-        ${MICROPY_PORT_DIR}/zeno_modules/zeno_lcd/vendor
         ${MICROPY_BOARD_DIR}
         ${CMAKE_BINARY_DIR}
     LDFRAGMENTS
@@ -375,5 +370,3 @@ add_custom_command(
     VERBATIM
     COMMAND_EXPAND_LISTS
 )
-
-

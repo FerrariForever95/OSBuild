@@ -1,4 +1,4 @@
-# lcd (zeno_lcd) - build and flash
+# zenotft - build and flash
 
 **Status: written against the repo source, NOT compiled or run. Expect to fix a few build errors.**
 
@@ -11,7 +11,7 @@ Copy `partitions-16MiB-zeno.csv` to `micropython/ports/esp32/` and add `sdkconfi
 ## 2. Build
 ```
 cd micropython/ports/esp32
-make BOARD=ESP32_GENERIC_S3 BOARD_VARIANT=SPIRAM_OCT USER_C_MODULES=/abs/path/zeno_lcd/micropython.cmake
+make BOARD=ESP32_GENERIC_S3 BOARD_VARIANT=SPIRAM_OCT USER_C_MODULES=/abs/path/zenotft/micropython.cmake
 ```
 (use your own board/variant names; first build after adding the module: `make clean`).
 Check `ports/esp32/main/CMakeLists.txt`: the IDF component list must include **spiffs** and **esp_adc** (+ driver, esp_rom, hal, soc, vfs). Add any that are missing.
@@ -25,7 +25,7 @@ Fonts in `fonts/` are the repo FONTX2 files; check their licenses before shippin
 See `zeno_test.py`. Order: init -> mount -> font_load -> touch_init -> read_raw (idle vs pressed) -> touch_calibration -> read_touch.
 
 ## Notes
-- Pins are compile-time constants in `vendor/lcd_pins.h` (build fails until filled in). `lcd.init()` takes only width/height/invert. There is no backlight handling: wire it to 3V3 or drive it yourself.
+- Pins are runtime arguments to `init()`; none are baked in. Backlight GPIO (38) must not be one of the 13 bus pins.
 - Touch needs ADC1 only (GPIO1..10, channel = GPIO-1) and must not coexist with `machine.ADC` on ADC1. If boot aborts with an ADC driver "CONFLICT" message, the legacy and new ADC drivers are both linked: that is the cause.
 - JPEG uses the S3 ROM decoder (CONFIG_JD_USE_ROM). If the build says it is unsupported, enable the external tjpgd (esp_jpeg component) instead. Baseline JPEG only.
-- Vendored code: MIT, nopnop2002/esp-idf-parallel-tft; keep vendor/LICENSE.nopnop2002-esp-idf-parallel-tft. Only patches: vendor/lcd_com.c, the legacy I2S header include guarded.
+- Vendored code: MIT, nopnop2002/esp-idf-parallel-tft; keep vendor/LICENSE.nopnop2002-esp-idf-parallel-tft. Only patch: one include line in vendor/lcd_com.c, and the legacy I2S header include guarded.
