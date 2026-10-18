@@ -18,6 +18,7 @@
 #   §08  Release Naming & Selection
 #   §09  Merged Firmware Image
 #   §10  Git & Firmware Release Subsystem
+#   §11a Build Dashboard (make -j12, real progress, live counters)
 #   §11  Build firmware
 #   §12  Flash firmware
 #   §13  Serial monitor
@@ -39,7 +40,7 @@ IFS=$'\n\t'
 # §00  CONSTANTS & PATHS
 # =============================================================================
 
-readonly SCRIPT_VERSION="2.4.0"
+readonly SCRIPT_VERSION="2.5.0"
 readonly SCRIPT_NAME="ZENO OS Firmware Manager"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -56,6 +57,9 @@ readonly BACKUP_DIR="$REPO/.config/backups"
 
 readonly RELEASES_DIR="$REPO/firmware_releases"
 readonly LEGACY_RELEASES_DIR="$REPO/firmware releases"
+
+# ── Parallel build jobs ──────────────────────────────────────────────────────
+readonly BUILD_JOBS=12
 
 # ── Known source file locations (auto-detected; fall back to these) ──────────
 readonly BOARD_DIR="$PORT_DIR/boards/${BOARD}"
@@ -94,6 +98,7 @@ CURRENT_RELEASE_NAME=""     # e.g. "jelly-jammy_20260825_141230"
 CURRENT_RELEASE_DIR=""      # full path to the release folder in use
 CURRENT_RELEASE_IS_NEW=1    # 1 = brand new release, 0 = reusing an existing one
 CURRENT_COMMIT_MSG=""
+BUILD_RC=0                  # exit code of the last run_make_dashboard
 
 # ── Log file references (set by init_log_session) ───────────────────────────
 LOG_BUILD=""
@@ -273,6 +278,23 @@ ui_gauge() {
                 printf "."
             done
             printf "] done\n"
+            ;;
+    esac
+}
+
+# Taller gauge so a multi-line live status fits (ui_gauge is fixed at height 7).
+# Reads whiptail "XXX / pct / message / XXX" blocks on stdin.
+ui_gauge_sized() {
+    local title="$1" h="${2:-17}"
+    case "$UI_BACKEND" in
+        whiptail) whiptail --title " $title " --gauge "Starting…" "$h" "$UI_W" 0 ;;
+        dialog)   dialog   --title " $title " --gauge "Starting…" "$h" "$UI_W" 0 ;;
+        text)
+            local line
+            while IFS= read -r line; do
+                [[ "$line" =~ ^[0-9]+$ ]] && printf '\r  %s: %3s%%' "$title" "$line"
+            done
+            printf '\n'
             ;;
     esac
 }
@@ -925,6 +947,119 @@ git_release_workflow() {
 }
 
 # =============================================================================
+# §11a  BUILD DASHBOARD
+# =============================================================================
+# - Runs make with $BUILD_JOBS (12) parallel jobs
+# - Progress % comes from the real ninja "[done/total]" counter in the log
+#   (the old bar used integer-division bc maths and stayed at 0% for 30s)
+# - Live counters inside the same whiptail gauge:
+#     compiled files, files made this run, build steps (files used),
+#     file currently building, total files in repo root, last push
+# =============================================================================
+
+# Total regular files in the repo root (excluding .git)
+_count_root_files() {
+    find "$REPO" -path "$REPO/.git" -prune -o -type f -print 2>/dev/null | wc -l
+}
+
+# Last push = tip of origin/<branch> (what the remote last received)
+_last_push_info() {
+    [[ -d "$REPO/.git" ]] || { echo "no git repository"; return; }
+    command -v git >/dev/null 2>&1 || { echo "git not installed"; return; }
+    local br ref
+    br=$(git -C "$REPO" branch --show-current 2>/dev/null)
+    ref="origin/${br:-main}"
+    if ! git -C "$REPO" rev-parse --verify -q "$ref" >/dev/null 2>&1; then
+        echo "never pushed ($ref not found)"
+        return
+    fi
+    git -C "$REPO" log -1 --format='%h %s (%cr)' "$ref" 2>/dev/null \
+        | tr -d '\\' | cut -c1-72
+}
+
+# Usage: run_make_dashboard "Title" "$log_file"      → result in $BUILD_RC
+run_make_dashboard() {
+    local title="$1" log_file="$2"
+    local marker; marker=$(mktemp /tmp/zfm_mark_XXXX)
+    local root_total last_push
+    root_total=$(_count_root_files)
+    last_push=$(_last_push_info)
+
+    echo "# make -j${BUILD_JOBS} BOARD=$CFG_BOARD" >> "$log_file"
+
+    cd "$PORT_DIR" || { BUILD_RC=1; rm -f "$marker"; return 1; }
+    CMAKE_BUILD_PARALLEL_LEVEL="$BUILD_JOBS" \
+        make -j"$BUILD_JOBS" BOARD="$CFG_BOARD" >> "$log_file" 2>&1 &
+    local make_pid=$!
+
+    (
+        elapsed=0; made=0; pct=0
+        while kill -0 "$make_pid" 2>/dev/null; do
+            elapsed=$(( elapsed + 1 ))
+
+            # ninja progress line:  [123/1456] Building C object ...
+            tail_chunk=$(tail -n 300 "$log_file" 2>/dev/null)
+            counter=$(printf '%s\n' "$tail_chunk" \
+                      | grep -aoE '^\[[0-9]+/[0-9]+\]' | tail -1)
+            done_n=0; total_n=0
+            if [[ "$counter" =~ ^\[([0-9]+)/([0-9]+)\]$ ]]; then
+                done_n="${BASH_REMATCH[1]}"; total_n="${BASH_REMATCH[2]}"
+            fi
+
+            if (( total_n > 0 )); then
+                pct=$(( done_n * 100 / total_n ))
+                (( pct > 99 )) && pct=99
+                phase="Compiling / linking"
+            else
+                pct=$(( elapsed < 20 ? elapsed / 4 : 5 ))
+                phase="Preparing (submodules, mpy-cross, cmake configure)"
+            fi
+
+            compiled=$(grep -acE 'Building (C|CXX|ASM) object|^CC |^CXX ' \
+                       "$log_file" 2>/dev/null)
+            [[ -z "$compiled" ]] && compiled=0
+
+            # files produced by this build (refresh every 3s, find is heavier)
+            if (( elapsed % 3 == 1 )); then
+                made=$(find "$BUILD_DIR" -type f -newer "$marker" 2>/dev/null | wc -l)
+            fi
+
+            last_file=$(printf '%s\n' "$tail_chunk" \
+                | grep -aoE 'Building (C|CXX|ASM) object [^ ]+' | tail -1 \
+                | sed -E 's/.*object //; s#.*/##; s/\.obj$//; s/\.o$//')
+
+            msg="${phase}\\n"
+            msg+="Jobs: ${BUILD_JOBS}   Elapsed: $(( elapsed / 60 ))m $(( elapsed % 60 ))s\\n\\n"
+            msg+="Compiled so far     : ${compiled}\\n"
+            msg+="Made this build     : ${made} files\\n"
+            msg+="Build steps (used)  : ${done_n} / ${total_n}\\n"
+            msg+="Now building        : ${last_file:-—}\\n\\n"
+            msg+="Files in repo root  : ${root_total}\\n"
+            msg+="Last push           : ${last_push}"
+
+            printf 'XXX\n%s\n%s\nXXX\n' "$pct" "$msg"
+            sleep 1
+        done
+        printf 'XXX\n100\n%s\nXXX\n' "Finalizing…"
+    ) | ui_gauge_sized "$title" 17
+
+    wait "$make_pid" && BUILD_RC=0 || BUILD_RC=$?
+
+    # final stats into the log
+    local f_compiled f_made f_root
+    f_compiled=$(grep -acE 'Building (C|CXX|ASM) object|^CC |^CXX ' "$log_file" 2>/dev/null)
+    f_made=$(find "$BUILD_DIR" -type f -newer "$marker" 2>/dev/null | wc -l)
+    f_root=$(_count_root_files)
+    {
+        echo "# Stats: compiled=${f_compiled:-0} made=${f_made} root_files=${f_root}"
+        echo "# Last push: ${last_push}"
+    } >> "$log_file"
+
+    rm -f "$marker"
+    return 0
+}
+
+# =============================================================================
 # §11  BUILD FIRMWARE
 # =============================================================================
 
@@ -943,7 +1078,7 @@ build_firmware() {
     if [[ "$silent" == "0" ]]; then
         release_prompt_metadata || return 0
         ui_yesno "Build Firmware" \
-            "Ready to build firmware.\n\nBoard: $CFG_BOARD\nRelease: $CURRENT_RELEASE_NAME\nCommit: $CURRENT_COMMIT_MSG\n\nBegin build?" \
+            "Ready to build firmware.\n\nBoard: $CFG_BOARD\nRelease: $CURRENT_RELEASE_NAME\nCommit: $CURRENT_COMMIT_MSG\nJobs: $BUILD_JOBS\n\nBegin build?" \
             || return 0
     else
         if [[ -z "$CURRENT_RELEASE_NAME" ]]; then
@@ -966,30 +1101,15 @@ build_firmware() {
         echo "# Board   : $CFG_BOARD"
         echo "# Release : $CURRENT_RELEASE_NAME"
         echo "# IDF     : ${IDF_PATH:-unset}"
+        echo "# Jobs    : $BUILD_JOBS"
         echo "# ────────────────────────────────────────────"
     } > "$log_file"
 
     local build_start; build_start=$(date +%s)
     local rc=0
 
-    cd "$PORT_DIR"
-    make BOARD="$CFG_BOARD" >> "$log_file" 2>&1 &
-    local make_pid=$!
-
-    (
-        local elapsed=0
-        local pct=0
-        while kill -0 "$make_pid" 2>/dev/null; do
-            (( elapsed++ )) || true
-            pct=$(echo "scale=0; 95 - (95 / (1 + $elapsed / 30))" | bc 2>/dev/null || \
-                  echo $(( 95 < elapsed*2 ? 95 : elapsed*2 )) )
-            echo "$pct"
-            sleep 1
-        done
-        echo 100
-    ) | ui_gauge "Building Firmware" "make BOARD=$CFG_BOARD"
-
-    wait "$make_pid" && rc=0 || rc=$?
+    run_make_dashboard "Building Firmware" "$log_file"
+    rc=$BUILD_RC
 
     local build_end; build_end=$(date +%s)
     local duration=$(( build_end - build_start ))
@@ -1204,10 +1324,13 @@ build_info_ui() {
     lines+=("  Repository Path : $REPO")
     lines+=("  Branch          : $branch")
     lines+=("  Latest Commit   : $last_commit")
+    lines+=("  Last Push       : $(_last_push_info)")
+    lines+=("  Files in Root   : $(_count_root_files)")
     lines+=("  Releases Root   : $RELEASES_DIR")
     lines+=("  Releases Count  : $release_count")
     lines+=("")
     lines+=("  Board           : $CFG_BOARD")
+    lines+=("  Build Jobs      : $BUILD_JOBS")
     lines+=("  Build Dir       : $BUILD_DIR")
     lines+=("  Latest Merged   : $build_ts")
     lines+=("")
@@ -1540,11 +1663,16 @@ _build_show_result() {
         pt_sz=$(du -h   "$FW_PARTITION"   2>/dev/null | cut -f1 || echo "?")
         fw_sz=$(du -h   "$FW_MICROPYTHON" 2>/dev/null | cut -f1 || echo "?")
 
+        local stats_line
+        stats_line=$(grep -a '^# Stats:' "$log_file" 2>/dev/null | tail -1 | sed 's/^# Stats: //')
+
         local -a ok=()
         ok+=("") ok+=("  ✔  $label succeeded!")  ok+=("")
         ok+=("  Board      : $CFG_BOARD")
+        ok+=("  Jobs       : $BUILD_JOBS")
         ok+=("  Duration   : ${duration}s")
         ok+=("  Completed  : $(date '+%Y-%m-%d %H:%M:%S')")
+        [[ -n "$stats_line" ]] && ok+=("  Stats      : $stats_line")
         ok+=("")
         ok+=("  Firmware images (build dir, not release folder):")
         ok+=("    bootloader.bin        $boot_sz")
@@ -1569,7 +1697,7 @@ build_clean() {
     _idf_ensure_loaded || return 1
     release_prompt_metadata || return 0
 
-    if ! ui_yesno "Clean Build" "Perform a CLEAN build for $CFG_BOARD?\n\nRelease: $CURRENT_RELEASE_NAME"; then
+    if ! ui_yesno "Clean Build" "Perform a CLEAN build for $CFG_BOARD?\n\nRelease: $CURRENT_RELEASE_NAME\nJobs: $BUILD_JOBS"; then
         return 0
     fi
 
@@ -1581,26 +1709,15 @@ build_clean() {
     rm -rf "$BUILD_DIR"
     cd "$PORT_DIR"
 
-    make BOARD="$CFG_BOARD" submodules >> "$log_file" 2>&1
+    ui_wait_screen "Clean Build" "Updating submodules (make -j${BUILD_JOBS} submodules)…"
+    make -j"$BUILD_JOBS" BOARD="$CFG_BOARD" submodules >> "$log_file" 2>&1
 
     local build_start; build_start=$(date +%s)
     local rc=0
-    make BOARD="$CFG_BOARD" >> "$log_file" 2>&1 &
-    local make_pid=$!
 
-    (
-        local elapsed=0
-        while kill -0 "$make_pid" 2>/dev/null; do
-            (( elapsed++ )) || true
-            local pct
-            pct=$(echo "scale=0; 95 - (95 / (1 + $elapsed / 45))" | bc 2>/dev/null || echo 50)
-            echo "$pct"
-            sleep 1
-        done
-        echo 100
-    ) | ui_gauge "Clean Build in Progress" "Building for $CFG_BOARD"
+    run_make_dashboard "Clean Build in Progress" "$log_file"
+    rc=$BUILD_RC
 
-    wait "$make_pid" && rc=0 || rc=$?
     local duration=$(( $(date +%s) - build_start ))
 
     _build_show_result "$rc" "$duration" "$log_file" "Clean Build"
@@ -1613,7 +1730,7 @@ build_incremental() {
     _idf_ensure_loaded || return 1
     release_prompt_metadata || return 0
 
-    if ! ui_yesno "Incremental Build" "Perform an INCREMENTAL build?\n\nRelease: $CURRENT_RELEASE_NAME"; then
+    if ! ui_yesno "Incremental Build" "Perform an INCREMENTAL build?\n\nRelease: $CURRENT_RELEASE_NAME\nJobs: $BUILD_JOBS"; then
         return 0
     fi
 
@@ -1622,24 +1739,12 @@ build_incremental() {
     LOG_BUILD="$log_file"
     mkdir -p "$LOG_DIR"
 
-    cd "$PORT_DIR"
     local build_start; build_start=$(date +%s)
     local rc=0
-    make BOARD="$CFG_BOARD" >> "$log_file" 2>&1 &
-    local make_pid=$!
 
-    (
-        local elapsed=0
-        while kill -0 "$make_pid" 2>/dev/null; do
-            (( elapsed++ )) || true
-            pct=$(echo "scale=0; 95 - (95 / (1 + $elapsed / 20))" | bc 2>/dev/null || echo 50)
-            echo "$pct"
-            sleep 1
-        done
-        echo 100
-    ) | ui_gauge "Building (Incremental)" "make BOARD=$CFG_BOARD"
+    run_make_dashboard "Building (Incremental)" "$log_file"
+    rc=$BUILD_RC
 
-    wait "$make_pid" && rc=0 || rc=$?
     local duration=$(( $(date +%s) - build_start ))
 
     _build_show_result "$rc" "$duration" "$log_file" "Incremental Build"
@@ -1651,8 +1756,8 @@ build_incremental() {
 build_automation_ui() {
     while true; do
         local -a items=(
-            "CLEAN"       "Clean Build (rm build + make + merge + git release)"
-            "INCREMENTAL" "Incremental Build (make + merge + git release)"
+            "CLEAN"       "Clean Build (rm build + make -j${BUILD_JOBS} + merge + git release)"
+            "INCREMENTAL" "Incremental Build (make -j${BUILD_JOBS} + merge + git release)"
             "FLASH"       "Flash Firmware"
             "MONITOR"     "Serial Monitor"
             "BACK"        "← Return to main menu"
@@ -1689,6 +1794,8 @@ show_welcome() {
     msg+="  Repo       : $REPO\n"
     msg+="  Branch     : $branch\n"
     msg+="  Board      : $CFG_BOARD\n"
+    msg+="  Build jobs : $BUILD_JOBS\n"
+    msg+="  Last push  : $(_last_push_info)\n"
     msg+="  Releases   : firmware_releases/\n"
     ui_msgbox "ZENO OS Firmware Manager v$SCRIPT_VERSION" "$msg"
 }
