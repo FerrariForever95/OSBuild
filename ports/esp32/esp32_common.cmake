@@ -165,6 +165,9 @@ list(APPEND MICROPY_SOURCE_PORT
     zeno_modules/zeno_lcd/touch_calib.c
     zeno_modules/zeno_lcd/modzlcd.c
     zeno_modules/zeno_lcd/modztouch.c
+    zeno_modules/zeno_lcd/zeno_gfx.c
+    zeno_modules/zeno_lcd/zeno_font.c
+    zeno_modules/zeno_lcd/zeno_font_data.c
 )
 list(TRANSFORM MICROPY_SOURCE_PORT PREPEND ${MICROPY_PORT_DIR}/)
 list(APPEND MICROPY_SOURCE_PORT ${CMAKE_BINARY_DIR}/pins.c)

@@ -8,6 +8,7 @@
 #define ZENO_PURE_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 #include <limits.h>
 #include <math.h>
@@ -191,6 +192,49 @@ static inline void zt_cal_apply(const zt_cal_t *k, int rx, int ry, int w, int h,
     if (iy > h - 1) iy = h - 1;
     *x = (int)ix;
     *y = (int)iy;
+}
+
+/* ------------------------------------------------------------------------
+ * Colour + text helpers (used by zeno_gfx.c / zeno_font.c)
+ * ---------------------------------------------------------------------- */
+
+/* 8-bit-per-channel RGB -> RGB565 */
+static inline uint16_t zl_color565(uint8_t r, uint8_t g, uint8_t b)
+{
+    return (uint16_t)(((r & 0xF8u) << 8) | ((g & 0xFCu) << 3) | (b >> 3));
+}
+
+/* Blend two RGB565 colours. a = 0 -> bg exactly, a = 255 -> fg exactly. */
+static inline uint16_t zl_blend565(uint16_t bg, uint16_t fg, uint8_t a)
+{
+    uint32_t ia = 255u - a;
+    uint32_t r = (((bg >> 11) & 0x1Fu) * ia + ((fg >> 11) & 0x1Fu) * a + 127u) / 255u;
+    uint32_t g = (((bg >> 5)  & 0x3Fu) * ia + ((fg >> 5)  & 0x3Fu) * a + 127u) / 255u;
+    uint32_t b = ((bg & 0x1Fu) * ia + (fg & 0x1Fu) * a + 127u) / 255u;
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+/* Decode one UTF-8 code point from s[*i..len). Advances *i. Malformed or
+ * truncated sequences yield U+FFFD and consume exactly one byte. */
+static inline uint32_t zl_utf8_next(const uint8_t *s, size_t len, size_t *i)
+{
+    uint32_t c = s[*i];
+    int extra;
+    uint32_t cp, min;
+    if (c < 0x80) { (*i)++; return c; }
+    if      ((c & 0xE0) == 0xC0) { extra = 1; cp = c & 0x1F; min = 0x80; }
+    else if ((c & 0xF0) == 0xE0) { extra = 2; cp = c & 0x0F; min = 0x800; }
+    else if ((c & 0xF8) == 0xF0) { extra = 3; cp = c & 0x07; min = 0x10000; }
+    else { (*i)++; return 0xFFFD; }
+    if (*i + (size_t)extra >= len) { (*i)++; return 0xFFFD; }   /* truncated */
+    for (int k = 1; k <= extra; k++) {
+        uint32_t cc = s[*i + k];
+        if ((cc & 0xC0) != 0x80) { (*i)++; return 0xFFFD; }
+        cp = (cp << 6) | (cc & 0x3F);
+    }
+    if (cp < min || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) { (*i)++; return 0xFFFD; }
+    *i += (size_t)extra + 1;
+    return cp;
 }
 
 #endif /* ZENO_PURE_H */

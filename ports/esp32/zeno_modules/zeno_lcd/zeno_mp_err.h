@@ -11,9 +11,11 @@
 #include "py/runtime.h"
 #include "esp_err.h"
 
-static inline void zl_raise_esp_err(esp_err_t e)
-{
-    mp_raise_msg_varg(&mp_type_OSError, MP_ERROR_TEXT("%s"), esp_err_to_name(e));
-}
+/* A macro, not a static inline function: MicroPython's QSTR/text-compression
+ * scanner (py/makeqstrdefs.py) attributes MP_ERROR_TEXT() strings to the .c
+ * file being preprocessed. Left inside a header it can be the first thing in
+ * the preprocessed stream with no source file yet, which crashes the scanner. */
+#define zl_raise_esp_err(e) \
+    mp_raise_msg_varg(&mp_type_OSError, MP_ERROR_TEXT("%s"), esp_err_to_name(e))
 
 #endif

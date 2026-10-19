@@ -17,6 +17,9 @@ add_library(usermod_zeno_lcd INTERFACE)
 target_sources(usermod_zeno_lcd INTERFACE
     ${CMAKE_CURRENT_LIST_DIR}/lcd_bus.c
     ${CMAKE_CURRENT_LIST_DIR}/ili9488_panel.c
+    ${CMAKE_CURRENT_LIST_DIR}/zeno_gfx.c
+    ${CMAKE_CURRENT_LIST_DIR}/zeno_font.c
+    ${CMAKE_CURRENT_LIST_DIR}/zeno_font_data.c
     ${CMAKE_CURRENT_LIST_DIR}/touch_drv.c
     ${CMAKE_CURRENT_LIST_DIR}/touch_calib.c
     ${CMAKE_CURRENT_LIST_DIR}/modzlcd.c
