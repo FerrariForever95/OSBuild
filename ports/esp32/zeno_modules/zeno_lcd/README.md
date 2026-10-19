@@ -69,3 +69,23 @@ cc -std=c11 -Wall -Wextra -I.. -o host_test_pure host_test_pure.c -lm
 ./host_test_pure
 ```
 This actually runs in this environment and prints `ALL TESTS PASSED`.
+
+
+## Out-of-bounds drawing
+
+Every drawing command checks that the whole shape fits on the screen *before*
+touching the display. If it does not, it prints e.g.
+`lcd.line: out of bounds (screen is 320x480), command ignored` and returns
+`None`: nothing is drawn, no exception is raised, and the bus lock is never
+taken, so the REPL / your script simply carries on.
+
+- `w` or `h` of `0` is a silent no-op (a 0% progress bar); a negative size or
+  radius is reported and ignored.
+- Lines with `width > 1` include their pen thickness in the check; curves are
+  checked by their control points; arcs/pies/rings by their full circle;
+  `lcd.text` by the measured text block.
+- `lcd.strict_bounds(False)` restores clip-at-the-edge drawing, but anything
+  more than 2048 px off-screen is still rejected (it would take billions of
+  steps to draw). `lcd.strict_bounds()` returns the current mode.
+
+Tests: `tests/host/test_bounds.py` (run with the host MicroPython build).

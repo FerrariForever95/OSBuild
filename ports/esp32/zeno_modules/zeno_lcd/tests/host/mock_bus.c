@@ -29,8 +29,10 @@ static unsigned long extra_px, oob_px, txn;
 
 esp_err_t zl_bus_init(void) { s_init = true; return ESP_OK; }
 bool zl_bus_is_init(void) { return s_init; }
-bool zl_bus_lock(void) { return true; }
-void zl_bus_unlock(void) {}
+/* real (non-recursive) lock semantics, so a leaked lock is detectable */
+static bool s_locked;
+bool zl_bus_lock(void) { if (s_locked) return false; s_locked = true; return true; }
+void zl_bus_unlock(void) { s_locked = false; }
 void zl_bus_set_timing(uint8_t l, uint8_t h) { s_lo = l; s_hi = h; }
 void zl_bus_get_timing(uint8_t *l, uint8_t *h) { *l = s_lo; *h = s_hi; }
 void zl_bus_reset_level(int level) { (void)level; }
@@ -126,6 +128,9 @@ static mp_obj_t m_dump(size_t n, const mp_obj_t *a)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(m_dump_obj, 3, 4, m_dump);
 
+static mp_obj_t m_locked(void) { return mp_obj_new_bool(s_locked); }
+static MP_DEFINE_CONST_FUN_OBJ_0(m_locked_obj, m_locked);
+
 static const mp_rom_map_elem_t m_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_mocklcd) },
     { MP_ROM_QSTR(MP_QSTR_get), MP_ROM_PTR(&m_get_obj) },
@@ -133,6 +138,7 @@ static const mp_rom_map_elem_t m_table[] = {
     { MP_ROM_QSTR(MP_QSTR_stats), MP_ROM_PTR(&m_stats_obj) },
     { MP_ROM_QSTR(MP_QSTR_count), MP_ROM_PTR(&m_count_obj) },
     { MP_ROM_QSTR(MP_QSTR_dump), MP_ROM_PTR(&m_dump_obj) },
+    { MP_ROM_QSTR(MP_QSTR_locked), MP_ROM_PTR(&m_locked_obj) },
 };
 static MP_DEFINE_CONST_DICT(m_globals, m_table);
 const mp_obj_module_t mp_module_mocklcd = { .base = { &mp_type_module }, .globals = (mp_obj_dict_t *)&m_globals };

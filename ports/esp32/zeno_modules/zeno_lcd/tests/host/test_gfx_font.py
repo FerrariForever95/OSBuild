@@ -4,6 +4,9 @@ import lcd
 import mocklcd
 import struct
 
+lcd.init()
+lcd.strict_bounds(False)   # this suite deliberately tests clip-at-the-edge behaviour
+
 BLACK, WHITE, RED, GREEN, BLUE = 0x0000, 0xFFFF, 0xF800, 0x07E0, 0x001F
 fails = 0
 passed = 0

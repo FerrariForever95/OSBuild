@@ -243,7 +243,7 @@ void zl_draw_line(int x0, int y0, int x1, int y1, uint16_t color)
     }
     int dx = x1 > x0 ? x1 - x0 : x0 - x1;
     int sx = x0 < x1 ? 1 : -1;
-    int dy = y1 > y0 ? -(y1 - y0) : (y0 - y1);
+    int dy = y1 > y0 ? -(y1 - y0) : -(y0 - y1);      /* always -|dy| */
     int sy = y0 < y1 ? 1 : -1;
     int err = dx + dy;
     int x = x0, y = y0;

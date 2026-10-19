@@ -100,12 +100,90 @@ static bool take_lock_or_raise(void)
     return true;
 }
 
+/* ------------------------------------------------------------------------ *
+ * Bounds guard.
+ *
+ * Every drawing command parses ALL its arguments first (so a bad argument can
+ * never leave the bus lock held), then checks that the whole shape fits on
+ * the screen. If it does not, a message is printed and the command is
+ * IGNORED -- nothing is drawn, no exception is raised, the REPL / running
+ * script carries on, and the bus lock is never touched.
+ *
+ * lcd.strict_bounds(False) switches to the old "clip at the edges" behaviour,
+ * but even then anything more than ZL_LOOSE_MARGIN pixels off-screen is
+ * rejected, because walking e.g. a line of billions of pixels would freeze
+ * the board.
+ * ------------------------------------------------------------------------ */
+#define ZL_LOOSE_MARGIN 2048
+
+static bool s_strict = true;
+
+static bool box_ok(const char *fn, int64_t x0, int64_t y0, int64_t x1, int64_t y1, int64_t pad)
+{
+    int64_t m = s_strict ? 0 : ZL_LOOSE_MARGIN;
+    int64_t W = (int64_t)zl_panel_width(), H = (int64_t)zl_panel_height();
+    if (x0 - pad < -m || y0 - pad < -m || x1 + pad > W - 1 + m || y1 + pad > H - 1 + m) {
+        mp_printf(&mp_plat_print, "lcd.%s: out of bounds (screen is %dx%d), command ignored\n",
+                  fn, (int)W, (int)H);
+        return false;
+    }
+    return true;
+}
+
+/* x,y,w,h rectangle. Returns false if the command must be skipped.
+ * w or h == 0 is a silent no-op (e.g. a 0% progress bar); negative is reported. */
+static bool rect_ok(const char *fn, int64_t x, int64_t y, int64_t w, int64_t h)
+{
+    if (w == 0 || h == 0) return false;
+    if (w < 0 || h < 0) {
+        mp_printf(&mp_plat_print, "lcd.%s: negative size, command ignored\n", fn);
+        return false;
+    }
+    return box_ok(fn, x, y, x + w - 1, y + h - 1, 0);
+}
+
+/* centre + radii (circle, ellipse, arc, pie, ring) */
+static bool radius_ok(const char *fn, int64_t cx, int64_t cy, int64_t rx, int64_t ry)
+{
+    if (rx < 0 || ry < 0) {
+        mp_printf(&mp_plat_print, "lcd.%s: negative radius, command ignored\n", fn);
+        return false;
+    }
+    return box_ok(fn, cx - rx, cy - ry, cx + rx, cy + ry, 0);
+}
+
+/* list of points (x0,y0,x1,y1,...) */
+static bool points_ok(const char *fn, const int *p, int n)
+{
+    if (n <= 0) return false;
+    int64_t x0 = p[0], y0 = p[1], x1 = p[0], y1 = p[1];
+    for (int i = 1; i < n; i++) {
+        if (p[2 * i] < x0) x0 = p[2 * i];
+        if (p[2 * i] > x1) x1 = p[2 * i];
+        if (p[2 * i + 1] < y0) y0 = p[2 * i + 1];
+        if (p[2 * i + 1] > y1) y1 = p[2 * i + 1];
+    }
+    return box_ok(fn, x0, y0, x1, y1, 0);
+}
+
+static inline int64_t i64min(int64_t a, int64_t b) { return a < b ? a : b; }
+static inline int64_t i64max(int64_t a, int64_t b) { return a > b ? a : b; }
+
+/* lcd.strict_bounds(on=None) -> bool */
+static mp_obj_t zlcd_strict_bounds(size_t n_args, const mp_obj_t *a)
+{
+    if (n_args == 1) s_strict = mp_obj_is_true(a[0]);
+    return mp_obj_new_bool(s_strict);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(zlcd_strict_bounds_obj, 0, 1, zlcd_strict_bounds);
+
 /* lcd.fill(color) */
 static mp_obj_t zlcd_fill(mp_obj_t color_in)
 {
+    uint16_t c = (uint16_t)mp_obj_get_int(color_in);
     require_ready();
     take_lock_or_raise();
-    zl_fill_screen((uint16_t)mp_obj_get_int(color_in));
+    zl_fill_screen(c);
     zl_bus_unlock();
     return mp_const_none;
 }
@@ -114,9 +192,12 @@ static MP_DEFINE_CONST_FUN_OBJ_1(zlcd_fill_obj, zlcd_fill);
 /* lcd.pixel(x, y, color) */
 static mp_obj_t zlcd_pixel(size_t n_args, const mp_obj_t *a)
 {
+    int x = mp_obj_get_int(a[0]), y = mp_obj_get_int(a[1]);
+    uint16_t c = (uint16_t)mp_obj_get_int(a[2]);
     require_ready();
+    if (!box_ok("pixel", x, y, x, y, 0)) return mp_const_none;
     take_lock_or_raise();
-    zl_draw_pixel(mp_obj_get_int(a[0]), mp_obj_get_int(a[1]), (uint16_t)mp_obj_get_int(a[2]));
+    zl_draw_pixel(x, y, c);
     zl_bus_unlock();
     return mp_const_none;
 }
@@ -125,10 +206,13 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(zlcd_pixel_obj, 3, 3, zlcd_pixel);
 /* lcd.fill_rect(x, y, w, h, color) */
 static mp_obj_t zlcd_fill_rect(size_t n_args, const mp_obj_t *a)
 {
+    int x = mp_obj_get_int(a[0]), y = mp_obj_get_int(a[1]);
+    int w = mp_obj_get_int(a[2]), h = mp_obj_get_int(a[3]);
+    uint16_t c = (uint16_t)mp_obj_get_int(a[4]);
     require_ready();
+    if (!rect_ok("fill_rect", x, y, w, h)) return mp_const_none;
     take_lock_or_raise();
-    zl_fill_rect(mp_obj_get_int(a[0]), mp_obj_get_int(a[1]),
-                mp_obj_get_int(a[2]), mp_obj_get_int(a[3]), (uint16_t)mp_obj_get_int(a[4]));
+    zl_fill_rect(x, y, w, h, c);
     zl_bus_unlock();
     return mp_const_none;
 }
@@ -137,10 +221,12 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(zlcd_fill_rect_obj, 5, 5, zlcd_fill_r
 /* lcd.hline(x, y, w, color) / lcd.vline(x, y, h, color) */
 static mp_obj_t zlcd_hline(size_t n_args, const mp_obj_t *a)
 {
+    int x = mp_obj_get_int(a[0]), y = mp_obj_get_int(a[1]), w = mp_obj_get_int(a[2]);
+    uint16_t c = (uint16_t)mp_obj_get_int(a[3]);
     require_ready();
+    if (!rect_ok("hline", x, y, w, 1)) return mp_const_none;
     take_lock_or_raise();
-    zl_fill_rect(mp_obj_get_int(a[0]), mp_obj_get_int(a[1]), mp_obj_get_int(a[2]), 1,
-                (uint16_t)mp_obj_get_int(a[3]));
+    zl_fill_rect(x, y, w, 1, c);
     zl_bus_unlock();
     return mp_const_none;
 }
@@ -148,10 +234,12 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(zlcd_hline_obj, 4, 4, zlcd_hline);
 
 static mp_obj_t zlcd_vline(size_t n_args, const mp_obj_t *a)
 {
+    int x = mp_obj_get_int(a[0]), y = mp_obj_get_int(a[1]), h = mp_obj_get_int(a[2]);
+    uint16_t c = (uint16_t)mp_obj_get_int(a[3]);
     require_ready();
+    if (!rect_ok("vline", x, y, 1, h)) return mp_const_none;
     take_lock_or_raise();
-    zl_fill_rect(mp_obj_get_int(a[0]), mp_obj_get_int(a[1]), 1, mp_obj_get_int(a[2]),
-                (uint16_t)mp_obj_get_int(a[3]));
+    zl_fill_rect(x, y, 1, h, c);
     zl_bus_unlock();
     return mp_const_none;
 }
@@ -160,17 +248,18 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(zlcd_vline_obj, 4, 4, zlcd_vline);
 /* lcd.line(x0, y0, x1, y1, color, width=1) */
 static mp_obj_t zlcd_line(size_t n_args, const mp_obj_t *a)
 {
-    require_ready();
+    int x0 = mp_obj_get_int(a[0]), y0 = mp_obj_get_int(a[1]);
+    int x1 = mp_obj_get_int(a[2]), y1 = mp_obj_get_int(a[3]);
+    uint16_t c = (uint16_t)mp_obj_get_int(a[4]);
     int width = (n_args > 5) ? mp_obj_get_int(a[5]) : 1;
-    take_lock_or_raise();
-    if (width <= 1) {
-        zl_draw_line(mp_obj_get_int(a[0]), mp_obj_get_int(a[1]),
-                    mp_obj_get_int(a[2]), mp_obj_get_int(a[3]), (uint16_t)mp_obj_get_int(a[4]));
-    } else {
-        zl_draw_thick_line(mp_obj_get_int(a[0]), mp_obj_get_int(a[1]),
-                           mp_obj_get_int(a[2]), mp_obj_get_int(a[3]), width,
-                           (uint16_t)mp_obj_get_int(a[4]));
+    require_ready();
+    int64_t pad = (width > 1) ? (int64_t)width / 2 + 1 : 0;
+    if (!box_ok("line", i64min(x0, x1), i64min(y0, y1), i64max(x0, x1), i64max(y0, y1), pad)) {
+        return mp_const_none;
     }
+    take_lock_or_raise();
+    if (width <= 1) zl_draw_line(x0, y0, x1, y1, c);
+    else            zl_draw_thick_line(x0, y0, x1, y1, width, c);
     zl_bus_unlock();
     return mp_const_none;
 }
@@ -179,16 +268,15 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(zlcd_line_obj, 5, 6, zlcd_line);
 /* lcd.rect(x, y, w, h, color, fill=False) */
 static mp_obj_t zlcd_rect(size_t n_args, const mp_obj_t *a)
 {
-    require_ready();
+    int x = mp_obj_get_int(a[0]), y = mp_obj_get_int(a[1]);
+    int w = mp_obj_get_int(a[2]), h = mp_obj_get_int(a[3]);
+    uint16_t c = (uint16_t)mp_obj_get_int(a[4]);
     bool fill = (n_args > 5) && mp_obj_is_true(a[5]);
+    require_ready();
+    if (!rect_ok("rect", x, y, w, h)) return mp_const_none;
     take_lock_or_raise();
-    if (fill) {
-        zl_fill_rect(mp_obj_get_int(a[0]), mp_obj_get_int(a[1]),
-                    mp_obj_get_int(a[2]), mp_obj_get_int(a[3]), (uint16_t)mp_obj_get_int(a[4]));
-    } else {
-        zl_draw_rect(mp_obj_get_int(a[0]), mp_obj_get_int(a[1]),
-                    mp_obj_get_int(a[2]), mp_obj_get_int(a[3]), (uint16_t)mp_obj_get_int(a[4]));
-    }
+    if (fill) zl_fill_rect(x, y, w, h, c);
+    else      zl_draw_rect(x, y, w, h, c);
     zl_bus_unlock();
     return mp_const_none;
 }
@@ -197,16 +285,14 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(zlcd_rect_obj, 5, 6, zlcd_rect);
 /* lcd.circle(x0, y0, r, color, fill=False) */
 static mp_obj_t zlcd_circle(size_t n_args, const mp_obj_t *a)
 {
-    require_ready();
+    int x = mp_obj_get_int(a[0]), y = mp_obj_get_int(a[1]), r = mp_obj_get_int(a[2]);
+    uint16_t c = (uint16_t)mp_obj_get_int(a[3]);
     bool fill = (n_args > 4) && mp_obj_is_true(a[4]);
+    require_ready();
+    if (!radius_ok("circle", x, y, r, r)) return mp_const_none;
     take_lock_or_raise();
-    if (fill) {
-        zl_fill_circle(mp_obj_get_int(a[0]), mp_obj_get_int(a[1]), mp_obj_get_int(a[2]),
-                       (uint16_t)mp_obj_get_int(a[3]));
-    } else {
-        zl_draw_circle(mp_obj_get_int(a[0]), mp_obj_get_int(a[1]), mp_obj_get_int(a[2]),
-                       (uint16_t)mp_obj_get_int(a[3]));
-    }
+    if (fill) zl_fill_circle(x, y, r, c);
+    else      zl_draw_circle(x, y, r, c);
     zl_bus_unlock();
     return mp_const_none;
 }
@@ -215,14 +301,18 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(zlcd_circle_obj, 4, 5, zlcd_circle);
 /* lcd.blit(x, y, w, h, buf) -- buf: RGB565 big-endian bytes, len == w*h*2 */
 static mp_obj_t zlcd_blit(size_t n_args, const mp_obj_t *a)
 {
-    require_ready();
     int x = mp_obj_get_int(a[0]), y = mp_obj_get_int(a[1]);
     int w = mp_obj_get_int(a[2]), h = mp_obj_get_int(a[3]);
-    if (w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > zl_panel_width() || y + h > zl_panel_height()) {
-        mp_raise_ValueError(MP_ERROR_TEXT("blit out of bounds"));
-    }
     mp_buffer_info_t buf;
     mp_get_buffer_raise(a[4], &buf, MP_BUFFER_READ);
+    require_ready();
+    /* blit never clips (the buffer is a fixed w*h image), so it is always strict */
+    int64_t W = zl_panel_width(), H = zl_panel_height();
+    if (w <= 0 || h <= 0 || x < 0 || y < 0 || (int64_t)x + w > W || (int64_t)y + h > H) {
+        mp_printf(&mp_plat_print, "lcd.blit: out of bounds (screen is %dx%d), command ignored\n",
+                  (int)W, (int)H);
+        return mp_const_none;
+    }
     if (buf.len != (size_t)w * (size_t)h * 2u) {
         mp_raise_ValueError(MP_ERROR_TEXT("buffer size must be w*h*2"));
     }
@@ -314,6 +404,7 @@ static mp_obj_t zlcd_ellipse(size_t n_args, const mp_obj_t *pos, mp_map_t *kw)
                                   ARG_BOOL_OPT(fill, false) };
     ARGS_PARSE(t);
     require_ready();
+    if (!radius_ok("ellipse", a[x].u_int, a[y].u_int, a[rx].u_int, a[ry].u_int)) return mp_const_none;
     take_lock_or_raise();
     if (a[fill].u_bool) zl_fill_ellipse(a[x].u_int, a[y].u_int, a[rx].u_int, a[ry].u_int, (uint16_t)a[color].u_int);
     else                zl_draw_ellipse(a[x].u_int, a[y].u_int, a[rx].u_int, a[ry].u_int, (uint16_t)a[color].u_int);
@@ -330,6 +421,7 @@ static mp_obj_t zlcd_round_rect(size_t n_args, const mp_obj_t *pos, mp_map_t *kw
                                   ARG_BOOL_OPT(fill, false) };
     ARGS_PARSE(t);
     require_ready();
+    if (!rect_ok("round_rect", a[x].u_int, a[y].u_int, a[w].u_int, a[h].u_int)) return mp_const_none;
     take_lock_or_raise();
     if (a[fill].u_bool) zl_fill_round_rect(a[x].u_int, a[y].u_int, a[w].u_int, a[h].u_int, a[r].u_int, (uint16_t)a[color].u_int);
     else                zl_draw_round_rect(a[x].u_int, a[y].u_int, a[w].u_int, a[h].u_int, a[r].u_int, (uint16_t)a[color].u_int);
@@ -346,6 +438,10 @@ static mp_obj_t zlcd_triangle(size_t n_args, const mp_obj_t *pos, mp_map_t *kw)
                                   ARG_INT(color), ARG_BOOL_OPT(fill, false) };
     ARGS_PARSE(t);
     require_ready();
+    {
+        int tp[6] = { a[x0].u_int, a[y0].u_int, a[x1].u_int, a[y1].u_int, a[x2].u_int, a[y2].u_int };
+        if (!points_ok("triangle", tp, 3)) return mp_const_none;
+    }
     take_lock_or_raise();
     if (a[fill].u_bool) zl_fill_triangle(a[x0].u_int, a[y0].u_int, a[x1].u_int, a[y1].u_int, a[x2].u_int, a[y2].u_int, (uint16_t)a[color].u_int);
     else                zl_draw_triangle(a[x0].u_int, a[y0].u_int, a[x1].u_int, a[y1].u_int, a[x2].u_int, a[y2].u_int, (uint16_t)a[color].u_int);
@@ -393,6 +489,7 @@ static mp_obj_t zlcd_polygon(size_t n_args, const mp_obj_t *pos, mp_map_t *kw)
     int pts[2 * ZL_POLY_MAX];
     int n = get_points(a[points].u_obj, pts);
     require_ready();
+    if (!points_ok("polygon", pts, n)) return mp_const_none;
     take_lock_or_raise();
     if (a[fill].u_bool) zl_fill_polygon(pts, n, (uint16_t)a[color].u_int);
     else                zl_draw_polygon(pts, n, (uint16_t)a[color].u_int);
@@ -410,6 +507,7 @@ static mp_obj_t zlcd_arc(size_t n_args, const mp_obj_t *pos, mp_map_t *kw)
     ARGS_PARSE(t);
     float s0 = mp_obj_get_float_to_f(a[start].u_obj), e0 = mp_obj_get_float_to_f(a[end].u_obj);
     require_ready();
+    if (!radius_ok("arc", a[x].u_int, a[y].u_int, a[r].u_int, a[r].u_int)) return mp_const_none;
     take_lock_or_raise();
     zl_draw_arc(a[x].u_int, a[y].u_int, a[r].u_int, s0, e0, a[thick].u_int, (uint16_t)a[color].u_int);
     zl_bus_unlock();
@@ -425,6 +523,7 @@ static mp_obj_t zlcd_pie(size_t n_args, const mp_obj_t *pos, mp_map_t *kw)
     ARGS_PARSE(t);
     float s0 = mp_obj_get_float_to_f(a[start].u_obj), e0 = mp_obj_get_float_to_f(a[end].u_obj);
     require_ready();
+    if (!radius_ok("pie", a[x].u_int, a[y].u_int, a[r].u_int, a[r].u_int)) return mp_const_none;
     take_lock_or_raise();
     zl_fill_ring_sector(a[x].u_int, a[y].u_int, 0, a[r].u_int, s0, e0, (uint16_t)a[color].u_int);
     zl_bus_unlock();
@@ -442,6 +541,7 @@ static mp_obj_t zlcd_ring(size_t n_args, const mp_obj_t *pos, mp_map_t *kw)
     ARGS_PARSE(t);
     float s0 = mp_obj_get_float_to_f(a[start].u_obj), e0 = mp_obj_get_float_to_f(a[end].u_obj);
     require_ready();
+    if (!radius_ok("ring", a[x].u_int, a[y].u_int, a[r_out].u_int, a[r_out].u_int)) return mp_const_none;
     take_lock_or_raise();
     zl_fill_ring_sector(a[x].u_int, a[y].u_int, a[r_in].u_int, a[r_out].u_int, s0, e0, (uint16_t)a[color].u_int);
     zl_bus_unlock();
@@ -457,6 +557,11 @@ static mp_obj_t zlcd_bezier(size_t n_args, const mp_obj_t *pos, mp_map_t *kw)
                                   ARG_INT(x3), ARG_INT(y3), ARG_INT(color) };
     ARGS_PARSE(t);
     require_ready();
+    {   /* the curve lies inside the hull of its control points, so checking them is enough */
+        int bp[8] = { a[x0].u_int, a[y0].u_int, a[x1].u_int, a[y1].u_int,
+                      a[x2].u_int, a[y2].u_int, a[x3].u_int, a[y3].u_int };
+        if (!points_ok("bezier", bp, 4)) return mp_const_none;
+    }
     take_lock_or_raise();
     zl_draw_bezier3(a[x0].u_int, a[y0].u_int, a[x1].u_int, a[y1].u_int, a[x2].u_int, a[y2].u_int,
                     a[x3].u_int, a[y3].u_int, (uint16_t)a[color].u_int);
@@ -473,6 +578,10 @@ static mp_obj_t zlcd_qbezier(size_t n_args, const mp_obj_t *pos, mp_map_t *kw)
                                   ARG_INT(color) };
     ARGS_PARSE(t);
     require_ready();
+    {
+        int bp[6] = { a[x0].u_int, a[y0].u_int, a[x1].u_int, a[y1].u_int, a[x2].u_int, a[y2].u_int };
+        if (!points_ok("qbezier", bp, 3)) return mp_const_none;
+    }
     take_lock_or_raise();
     zl_draw_bezier2(a[x0].u_int, a[y0].u_int, a[x1].u_int, a[y1].u_int, a[x2].u_int, a[y2].u_int,
                     (uint16_t)a[color].u_int);
@@ -489,6 +598,7 @@ static mp_obj_t zlcd_gradient(size_t n_args, const mp_obj_t *pos, mp_map_t *kw)
                                   ARG_BOOL_OPT(vertical, true) };
     ARGS_PARSE(t);
     require_ready();
+    if (!rect_ok("gradient", a[x].u_int, a[y].u_int, a[w].u_int, a[h].u_int)) return mp_const_none;
     take_lock_or_raise();
     zl_fill_rect_gradient(a[x].u_int, a[y].u_int, a[w].u_int, a[h].u_int,
                           (uint16_t)a[c0].u_int, (uint16_t)a[c1].u_int, a[vertical].u_bool);
@@ -562,6 +672,14 @@ static mp_obj_t zlcd_text(size_t n_args, const mp_obj_t *pos, mp_map_t *kw)
     int sc = check_scale(a[scale].u_int);
     int32_t bgc = (a[bg].u_obj == mp_const_none) ? -1 : (int32_t)(uint16_t)mp_obj_get_int(a[bg].u_obj);
     require_ready();
+    {
+        int tw, th;
+        zl_text_size(str, len, &f, sc, &tw, &th);
+        if (tw > 0 && th > 0 &&
+            !box_ok("text", a[x].u_int, a[y].u_int, (int64_t)a[x].u_int + tw - 1, (int64_t)a[y].u_int + th - 1, 0)) {
+            return mp_obj_new_int(a[x].u_int);      /* ignored: cursor does not move */
+        }
+    }
     take_lock_or_raise();
     int end_x = zl_text(a[x].u_int, a[y].u_int, str, len, &f, sc, (uint16_t)a[fg].u_int, bgc);
     zl_bus_unlock();
@@ -629,6 +747,9 @@ static mp_obj_t zlcd_blit_mono(size_t n_args, const mp_obj_t *pos, mp_map_t *kw)
     int sc = check_scale(a[scale].u_int);
     int32_t bgc = (a[bg].u_obj == mp_const_none) ? -1 : (int32_t)(uint16_t)mp_obj_get_int(a[bg].u_obj);
     require_ready();
+    if (!rect_ok("blit_mono", a[x].u_int, a[y].u_int, (int64_t)a[w].u_int * sc, (int64_t)a[h].u_int * sc)) {
+        return mp_const_none;
+    }
     take_lock_or_raise();
     zl_blit_mono(a[x].u_int, a[y].u_int, a[w].u_int, a[h].u_int, (const uint8_t *)bi.buf, sc,
                  (uint16_t)a[fg].u_int, bgc);
@@ -645,6 +766,7 @@ static const mp_rom_map_elem_t zlcd_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_height),      MP_ROM_PTR(&zlcd_height_obj) },
     { MP_ROM_QSTR(MP_QSTR_rotation),    MP_ROM_PTR(&zlcd_rotation_obj) },
     { MP_ROM_QSTR(MP_QSTR_madctl),      MP_ROM_PTR(&zlcd_madctl_obj) },
+    { MP_ROM_QSTR(MP_QSTR_strict_bounds), MP_ROM_PTR(&zlcd_strict_bounds_obj) },
     { MP_ROM_QSTR(MP_QSTR_fill),        MP_ROM_PTR(&zlcd_fill_obj) },
     { MP_ROM_QSTR(MP_QSTR_pixel),       MP_ROM_PTR(&zlcd_pixel_obj) },
     { MP_ROM_QSTR(MP_QSTR_fill_rect),   MP_ROM_PTR(&zlcd_fill_rect_obj) },
