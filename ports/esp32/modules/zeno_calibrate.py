@@ -8,7 +8,7 @@ and feeds the raw readings to the native affine solver in `touch`.
 Usage (from the MicroPython REPL or a Zeno OS app):
 
     import zeno_calibrate
-    zeno_calibrate.run()
+    zeno_calibrate.run(rotation=1)
 
 Run this once per physical unit (touch panels vary enough from one assembly
 to the next that calibration data does not transfer between units). Results
@@ -25,7 +25,6 @@ _SAMPLES_PER_POINT = 8
 _BG = 0x0000
 _TARGET = 0x07FF   # cyan
 _OK = 0x07E0       # green
-
 
 def _targets():
     w, h = lcd.width(), lcd.height()
@@ -66,8 +65,16 @@ def _sample_point(sx, sy):
     return sum(xs) / len(xs), sum(ys) / len(ys)
 
 
-def run():
-    """Run the 5-point calibration and save it. Returns (rms_px, max_err_px)."""
+def run(rotation=1):
+    """Run the 5-point calibration in the specified rotation and save it. 
+    Returns (rms_px, max_err_px)."""
+    # Initialize display with the requested orientation first
+    lcd.init(rotation=rotation)
+    try:
+        touch.init()
+    except OSError:
+        pass  # touch may already be initialized
+
     touch.calib_begin()
     for (sx, sy) in _targets():
         rx, ry = _sample_point(sx, sy)
@@ -77,5 +84,10 @@ def run():
     touch.calib_save()
 
     lcd.fill(_BG)
-    lcd.display(True)
+    # Note: lcd.display(True) or equivalent screen refresh if supported by driver
+    try:
+        lcd.display(True)
+    except AttributeError:
+        pass
+        
     return rms, maxerr
