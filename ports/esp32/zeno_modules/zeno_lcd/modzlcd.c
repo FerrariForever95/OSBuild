@@ -70,6 +70,20 @@ static mp_obj_t zlcd_init(size_t n_args, const mp_obj_t *pos, mp_map_t *kw)
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(zlcd_init_obj, 0, zlcd_init);
 
+/* lcd.reset() -- hardware reset pulse on RST. Panel must be re-initialised
+ * afterwards with lcd.init(). Safe to call before lcd.init(). */
+static mp_obj_t zlcd_reset(void)
+{
+    ensure_delay_fn();
+    esp_err_t e = zl_bus_init();
+    if (e != ESP_OK) {
+        zl_raise_esp_err(e);
+    }
+    zl_panel_hw_reset();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(zlcd_reset_obj, zlcd_reset);
+
 /* lcd.set_rotation(rotation, madctl=None) */
 static mp_obj_t zlcd_set_rotation(size_t n_args, const mp_obj_t *args)
 {
@@ -761,6 +775,7 @@ static MP_DEFINE_CONST_FUN_OBJ_KW(zlcd_blit_mono_obj, 0, zlcd_blit_mono);
 static const mp_rom_map_elem_t zlcd_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__),    MP_ROM_QSTR(MP_QSTR_lcd) },
     { MP_ROM_QSTR(MP_QSTR_init),        MP_ROM_PTR(&zlcd_init_obj) },
+    { MP_ROM_QSTR(MP_QSTR_reset),       MP_ROM_PTR(&zlcd_reset_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_rotation),MP_ROM_PTR(&zlcd_set_rotation_obj) },
     { MP_ROM_QSTR(MP_QSTR_width),       MP_ROM_PTR(&zlcd_width_obj) },
     { MP_ROM_QSTR(MP_QSTR_height),      MP_ROM_PTR(&zlcd_height_obj) },

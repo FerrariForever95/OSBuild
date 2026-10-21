@@ -109,8 +109,8 @@ esp_err_t zl_bus_init(void)
     }
 
     gpio_reset_pin(ZLCD_PIN_RESET);
+    gpio_set_level(ZLCD_PIN_RESET, 1);          /* level first: no low glitch */
     gpio_set_direction(ZLCD_PIN_RESET, GPIO_MODE_OUTPUT);
-    gpio_set_level(ZLCD_PIN_RESET, 1);
 
     s_inited = true;
     ESP_LOGI(TAG, "bus ready (register mode)");
