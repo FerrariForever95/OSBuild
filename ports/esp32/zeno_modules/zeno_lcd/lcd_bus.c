@@ -86,20 +86,20 @@ esp_err_t zl_bus_init(void)
 
     /* Same order and same calls as lcd_interface_cfg() in lcd_com.c */
     gpio_reset_pin(ZLCD_PIN_CS);
+    gpio_set_level(ZLCD_PIN_CS, 1);            /* level first: no low glitch */
     gpio_set_direction(ZLCD_PIN_CS, GPIO_MODE_OUTPUT);
-    gpio_set_level(ZLCD_PIN_CS, 1);
 
     gpio_reset_pin(ZLCD_PIN_RS);
+    gpio_set_level(ZLCD_PIN_RS, 1);            /* level first: no low glitch */
     gpio_set_direction(ZLCD_PIN_RS, GPIO_MODE_OUTPUT);
-    gpio_set_level(ZLCD_PIN_RS, 1);
 
     gpio_reset_pin(ZLCD_PIN_WR);
+    gpio_set_level(ZLCD_PIN_WR, 1);            /* level first: no low glitch */
     gpio_set_direction(ZLCD_PIN_WR, GPIO_MODE_OUTPUT);
-    gpio_set_level(ZLCD_PIN_WR, 1);
 
     gpio_reset_pin(ZLCD_PIN_RD);
+    gpio_set_level(ZLCD_PIN_RD, 1);            /* level first: no low glitch */
     gpio_set_direction(ZLCD_PIN_RD, GPIO_MODE_OUTPUT);
-    gpio_set_level(ZLCD_PIN_RD, 1);
 
     for (int i = 0; i < 8; i++) {
         gpio_reset_pin(data_pins[i]);
