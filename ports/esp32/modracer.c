@@ -28,7 +28,8 @@ static MP_DEFINE_CONST_FUN_OBJ_2(racer_update_obj, racer_update);
 static mp_obj_t racer_render(void) {
     rc_render(frame_buffer, &current_game);
     
-    mp_obj_t py_buf = mp_obj_new_bytearray_by_ref(sizeof(frame_buffer), frame_buffer);
+    // Use standard mp_obj_new_bytearray to properly support the buffer protocol
+    mp_obj_t py_buf = mp_obj_new_bytearray(sizeof(frame_buffer), frame_buffer);
     
     mp_obj_t tuple[3] = {
         py_buf,
