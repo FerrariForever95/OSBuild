@@ -146,8 +146,10 @@ list(APPEND MICROPY_SOURCE_PORT
     machine_sdcard.c
     zfs_lfs.c
     modespnow.c
+    car_core.c
     vector.c
-    modracer.c
+#    modracer.c
+    modracingcar.c
     modzfs.c
 #   modili9488.c
 #   ili9488.c
