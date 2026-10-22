@@ -25,7 +25,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-
+#include "driver/gpio.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
@@ -102,7 +102,15 @@ static time_t platform_mbedtls_time(time_t *timer) {
     return tv.tv_sec + TIMEUTILS_SECONDS_1970_TO_2000;
 }
 #endif
-
+static void hold_lcd_pins_high(void) {
+    static const uint8_t pins[] = { 1, 2, 14, 41, 12,          // CS, RS, WR, RD, RST
+                                    8, 15, 11, 10, 9, 4, 18, 17 }; // D0..D7
+    for (unsigned i = 0; i < sizeof(pins); i++) {
+        gpio_reset_pin(pins[i]);
+        gpio_set_level(pins[i], 1);                 // level first, no low glitch
+        gpio_set_direction(pins[i], GPIO_MODE_OUTPUT);
+    }
+}
 void mp_task(void *pvParameter) {
     volatile uint32_t sp = (uint32_t)esp_cpu_get_sp();
     #if MICROPY_PY_THREAD
@@ -302,6 +310,7 @@ void boardctrl_startup(void) {
 }
 
 void MICROPY_ESP_IDF_ENTRY(void) {
+    hold_lcd_pins_high();
     // Hook for a board to run code at start up.
     // This defaults to initialising NVS and detecting the flash size.
     MICROPY_BOARD_STARTUP();
