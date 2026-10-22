@@ -487,9 +487,6 @@ static void render_hud(car_game_t *g)
     font_t f;
     if (font_load(FONT_SANS16, &f)) text_shadow(g, g->w - text_width(&f, buf) - 8, 6, buf, FONT_SANS16, 0xFFE0);
 
-    if (!g->over && g->t < 3.5f) {
-        text_centered(g, g->h / 2 - 8, "TOUCH LEFT / RIGHT TO STEER", FONT_SANS16, 0xFFFF);
-    }
 }
 
 static void render_overlay(car_game_t *g)
