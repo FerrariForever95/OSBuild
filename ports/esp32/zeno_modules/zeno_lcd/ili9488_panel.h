@@ -21,8 +21,7 @@
  * binding installs mp_hal_delay_ms so other Python threads keep running. */
 void zl_panel_set_delay_fn(void (*fn)(uint32_t ms));
 
-/* HW reset pulse on RST (high/low/high + 150 ms settle). Marks the panel
- * not-ready: call zl_panel_init() (or lcd.init()) afterwards. */
+/* HW reset pulse (100 ms high / 100 ms low / high) as in lcd_interface_cfg(). */
 void zl_panel_hw_reset(void);
 
 /* Full bring-up: HW reset + the exact Nopnop ILI9488 table. rotation 0..3;

@@ -24,7 +24,7 @@
 #define OFFROAD_DECEL   620.0f
 #define LAT_SPEED       300.0f    /* world units / s at full steer            */
 #define STEER_RESP      10.0f     /* steer smoothing (1/s)                    */
-#define CURVE_PUSH      115.0f    /* outward drift at curvature 1, top speed  */
+#define CURVE_PUSH      28.0f     /* outward drift at curvature 1, top speed  */
 #define CURVE_K         0.0167f
 #define TRAFFIC_V_MIN   220.0f
 #define TRAFFIC_V_MAX   380.0f

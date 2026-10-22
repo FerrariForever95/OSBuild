@@ -25,25 +25,13 @@ static void delay_ms(uint32_t ms)
 
 void zl_panel_set_delay_fn(void (*fn)(uint32_t ms)) { s_delay_fn = fn; }
 
-/* Hardware reset: RST high (settle) -> low (>=10 ms, datasheet min is 10 us)
- * -> high, then wait 150 ms before ANY command (ILI9488 needs ~120 ms after
- * RST release). The first call after power-up also waits for the panel supply
- * and RC reset network to stabilise -- the cause of "blank on cold boot,
- * fine on warm reboot" (on a warm reboot the panel is already powered). */
 void zl_panel_hw_reset(void)
 {
-    static bool s_first = true;
-    if (s_first) {
-        delay_ms(120);              /* cold-boot power settle */
-        s_first = false;
-    }
     zl_bus_reset_level(1);
-    delay_ms(20);
+    delay_ms(100);
     zl_bus_reset_level(0);
-    delay_ms(20);
+    delay_ms(100);
     zl_bus_reset_level(1);
-    delay_ms(150);                  /* controller loads defaults after RST */
-    s_ready = false;                /* panel is now uninitialised */
 }
 
 /* ---- init tables: byte-for-byte from components/tft_library/ili9488.c ---- */
