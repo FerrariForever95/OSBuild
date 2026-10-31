@@ -25,6 +25,13 @@
  * shift applied to the wide result before saturation (use it for fixed-point,
  * e.g. Q15 multiply: shift=15). `shift` is ignored for floats.
  * `out` may be the same object as `a` or `b` (in-place).
+ *
+ * Backend notes (verified on hardware):
+ *   - ESP-DSP s16 mul WRAPS on overflow (no saturation)  -> scalar is used.
+ *   - ESP-DSP s16 dot uses shift' = 15 - shift and rounds up -> scalar is used.
+ *   - ESP-DSP s16 matmul uses shift' = 15 - shift (rounds up); we translate
+ *     the shift so `shift` keeps the documented ">> shift" meaning. Results
+ *     may be 1 LSB above the floored scalar result. Shifts > 15 use scalar.
  */
 
 #include <stdint.h>
@@ -118,14 +125,12 @@ static void sc_mul_f32(const void *pa, const void *pb, void *po, size_t n, int s
 
 /* ------------------------------------------------------------------ */
 /* ESP-DSP (PIE-accelerated) fast paths                                 */
+/* s16 mul is intentionally NOT accelerated: esp-dsp wraps on overflow. */
 /* ------------------------------------------------------------------ */
 
 #if VECTOR_HAVE_DSP
 static void fast_add_s16(const void *a, const void *b, void *o, size_t n, int sh) {
     dsps_add_s16(a, b, o, (int)n, 1, 1, 1, sh > 0 ? sh : 0);
-}
-static void fast_mul_s16(const void *a, const void *b, void *o, size_t n, int sh) {
-    dsps_mul_s16(a, b, o, (int)n, 1, 1, 1, sh > 0 ? sh : 0);
 }
 static void fast_add_f32(const void *a, const void *b, void *o, size_t n, int sh) {
     (void)sh; dsps_add_f32(a, b, o, (int)n, 1, 1, 1);
@@ -134,15 +139,14 @@ static void fast_mul_f32(const void *a, const void *b, void *o, size_t n, int sh
     (void)sh; dsps_mul_f32(a, b, o, (int)n, 1, 1, 1);
 }
 #define ADD_S16 fast_add_s16
-#define MUL_S16 fast_mul_s16
 #define ADD_F32 fast_add_f32
 #define MUL_F32 fast_mul_f32
 #else
 #define ADD_S16 sc_add_s16
-#define MUL_S16 sc_mul_s16
 #define ADD_F32 sc_add_f32
 #define MUL_F32 sc_mul_f32
 #endif
+#define MUL_S16 sc_mul_s16
 
 /* dispatch tables: [kind][op] */
 static const bin_fn_t op_table[4][3] = {
@@ -262,18 +266,13 @@ static mp_obj_t vector_dot(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw
             return mp_obj_new_float(acc);
         }
         case K_S16: {
-            /* Result is int16 (ESP-DSP semantics): pick `shift` so it fits. */
-            #if VECTOR_HAVE_DSP
-            int16_t r = 0;
-            if (n) dsps_dotprod_s16(a.buf, b.buf, &r, (int)n, (int8_t)sh);
-            return mp_obj_new_int(r);
-            #else
+            /* Scalar on purpose: esp-dsp's s16 dot uses (15 - shift) and rounds up.
+             * 64-bit accumulate, floor shift, saturate to int16. */
             const int16_t *x = a.buf, *y = b.buf;
             int64_t acc = 0;
             for (size_t i = 0; i < n; i++) acc += (int32_t)x[i] * (int32_t)y[i];
             acc >>= sh;
             return mp_obj_new_int(CLAMP(acc, (int64_t)INT16_MIN, (int64_t)INT16_MAX));
-            #endif
         }
         case K_S8: {
             const int8_t *x = a.buf, *y = b.buf;
@@ -336,7 +335,13 @@ static void sc_matmul_f32(const void *pa, const void *pb, void *po,
 
 #if VECTOR_HAVE_DSPM
 static void fast_matmul_s16(const void *a, const void *b, void *o, size_t m, size_t n, size_t k, int sh) {
-    dspm_mult_s16(a, b, o, (int)m, (int)n, (int)k, sh);
+    if (sh > 15) {
+        /* esp-dsp cannot express this shift */
+        sc_matmul_s16(a, b, o, m, n, k, sh);
+        return;
+    }
+    /* esp-dsp's effective right shift is (15 - shift) */
+    dspm_mult_s16(a, b, o, (int)m, (int)n, (int)k, 15 - sh);
 }
 static void fast_matmul_f32(const void *a, const void *b, void *o, size_t m, size_t n, size_t k, int sh) {
     (void)sh;
@@ -544,13 +549,14 @@ static MP_DEFINE_CONST_FUN_OBJ_KW(vector_sum_obj, 1, vector_sum);
 /* ------------------------------------------------------------------ */
 
 static mp_obj_t vector_info(void) {
-    #if VECTOR_HAVE_DSP
-    const char *m = "esp-dsp (PIE accelerated: add/mul/matmul s16 f32, dot s16 f32); scalar: others";
-    return mp_obj_new_str(m, strlen(m));
+    #if VECTOR_HAVE_DSP && VECTOR_HAVE_DSPM
+    const char *m = "esp-dsp (PIE: add s16/f32, mul f32, dot f32, matmul s16/f32); scalar: others";
+    #elif VECTOR_HAVE_DSP
+    const char *m = "esp-dsp (PIE: add s16/f32, mul f32, dot f32); matmul scalar (dspm not found); scalar: others";
     #else
     const char *m = "scalar C fallback (esp-dsp not found at build time)";
-    return mp_obj_new_str(m, strlen(m));
     #endif
+    return mp_obj_new_str(m, strlen(m));
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(vector_info_obj, vector_info);
 
