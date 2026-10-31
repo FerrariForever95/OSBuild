@@ -27,11 +27,14 @@
  * `out` may be the same object as `a` or `b` (in-place).
  *
  * Backend notes (verified on hardware):
- *   - ESP-DSP s16 mul WRAPS on overflow (no saturation)  -> scalar is used.
+ *   - ESP-DSP s16 add/mul WRAP on overflow (add only in its tail path)
+ *     -> scalar is used for both.
  *   - ESP-DSP s16 dot uses shift' = 15 - shift and rounds up -> scalar is used.
  *   - ESP-DSP s16 matmul uses shift' = 15 - shift (rounds up); we translate
  *     the shift so `shift` keeps the documented ">> shift" meaning. Results
- *     may be 1 LSB above the floored scalar result. Shifts > 15 use scalar.
+ *     may be a few LSB above the floored scalar result. Shifts > 15 use scalar.
+ *     s16 matmul WRAPS on overflow, so a bound is computed first and the
+ *     saturating scalar path is used whenever the result might not fit.
  */
 
 #include <stdint.h>
@@ -76,31 +79,28 @@ typedef enum { K_S8, K_S16, K_S32, K_F32 } kind_t;
 /* Scalar integer kernels (saturating)                                  */
 /* ------------------------------------------------------------------ */
 
-#define DEF_INT_OPS(SFX, T, WT, LO, HI)                                              \
-    static void sc_add_##SFX(const void *pa, const void *pb, void *po, size_t n, int sh) { \
+#define DEF_INT_OP(NAME, SFX, T, WT, LO, HI, OPSYM)                                  \
+    static void sc_##NAME##_##SFX(const void *pa, const void *pb, void *po, size_t n, int sh) { \
         const T *a = pa, *b = pb; T *o = po;                                         \
-        for (size_t i = 0; i < n; i++) {                                             \
-            WT r = (WT)a[i] + (WT)b[i];                                              \
-            if (sh > 0) r >>= sh;                                                    \
-            o[i] = (T)CLAMP(r, (WT)(LO), (WT)(HI));                                  \
-        }                                                                            \
-    }                                                                                \
-    static void sc_sub_##SFX(const void *pa, const void *pb, void *po, size_t n, int sh) { \
-        const T *a = pa, *b = pb; T *o = po;                                         \
-        for (size_t i = 0; i < n; i++) {                                             \
-            WT r = (WT)a[i] - (WT)b[i];                                              \
-            if (sh > 0) r >>= sh;                                                    \
-            o[i] = (T)CLAMP(r, (WT)(LO), (WT)(HI));                                  \
-        }                                                                            \
-    }                                                                                \
-    static void sc_mul_##SFX(const void *pa, const void *pb, void *po, size_t n, int sh) { \
-        const T *a = pa, *b = pb; T *o = po;                                         \
-        for (size_t i = 0; i < n; i++) {                                             \
-            WT r = (WT)a[i] * (WT)b[i];                                              \
-            if (sh > 0) r >>= sh;                                                    \
-            o[i] = (T)CLAMP(r, (WT)(LO), (WT)(HI));                                  \
+        if (sh == 0) {                                                               \
+            for (size_t i = 0; i < n; i++) {                                         \
+                WT r = (WT)a[i] OPSYM (WT)b[i];                                      \
+                o[i] = (T)CLAMP(r, (WT)(LO), (WT)(HI));                              \
+            }                                                                        \
+        } else {                                                                     \
+            int s = sh >= (int)(sizeof(WT) * 8) ? (int)(sizeof(WT) * 8) - 1 : sh;   \
+            for (size_t i = 0; i < n; i++) {                                         \
+                WT r = (WT)a[i] OPSYM (WT)b[i];                                      \
+                r >>= s;                                                             \
+                o[i] = (T)CLAMP(r, (WT)(LO), (WT)(HI));                              \
+            }                                                                        \
         }                                                                            \
     }
+
+#define DEF_INT_OPS(SFX, T, WT, LO, HI)                                              \
+    DEF_INT_OP(add, SFX, T, WT, LO, HI, +)                                           \
+    DEF_INT_OP(sub, SFX, T, WT, LO, HI, -)                                           \
+    DEF_INT_OP(mul, SFX, T, WT, LO, HI, *)
 
 DEF_INT_OPS(s8,  int8_t,  int32_t, INT8_MIN,  INT8_MAX)
 DEF_INT_OPS(s16, int16_t, int32_t, INT16_MIN, INT16_MAX)
@@ -125,27 +125,23 @@ static void sc_mul_f32(const void *pa, const void *pb, void *po, size_t n, int s
 
 /* ------------------------------------------------------------------ */
 /* ESP-DSP (PIE-accelerated) fast paths                                 */
-/* s16 mul is intentionally NOT accelerated: esp-dsp wraps on overflow. */
+/* s16 add/mul intentionally NOT accelerated: esp-dsp wraps on overflow.   */
 /* ------------------------------------------------------------------ */
 
 #if VECTOR_HAVE_DSP
-static void fast_add_s16(const void *a, const void *b, void *o, size_t n, int sh) {
-    dsps_add_s16(a, b, o, (int)n, 1, 1, 1, sh > 0 ? sh : 0);
-}
 static void fast_add_f32(const void *a, const void *b, void *o, size_t n, int sh) {
     (void)sh; dsps_add_f32(a, b, o, (int)n, 1, 1, 1);
 }
 static void fast_mul_f32(const void *a, const void *b, void *o, size_t n, int sh) {
     (void)sh; dsps_mul_f32(a, b, o, (int)n, 1, 1, 1);
 }
-#define ADD_S16 fast_add_s16
 #define ADD_F32 fast_add_f32
 #define MUL_F32 fast_mul_f32
 #else
-#define ADD_S16 sc_add_s16
 #define ADD_F32 sc_add_f32
 #define MUL_F32 sc_mul_f32
 #endif
+#define ADD_S16 sc_add_s16   /* esp-dsp s16 add wraps in its tail path: scalar */
 #define MUL_S16 sc_mul_s16
 
 /* dispatch tables: [kind][op] */
@@ -340,7 +336,19 @@ static void fast_matmul_s16(const void *a, const void *b, void *o, size_t m, siz
         sc_matmul_s16(a, b, o, m, n, k, sh);
         return;
     }
-    /* esp-dsp's effective right shift is (15 - shift) */
+    /* esp-dsp's s16 matmul WRAPS on overflow. Bound the result first and use
+     * the saturating scalar path unless it provably fits (also keeps the
+     * 32-bit accumulator safe, and leaves room for esp-dsp's round-up). */
+    const int16_t *pa = a, *pb = b;
+    int32_t ma = 0, mb = 0;
+    for (size_t i = 0; i < m * n; i++) { int32_t v = pa[i]; if (v < 0) v = -v; if (v > ma) ma = v; }
+    for (size_t i = 0; i < n * k; i++) { int32_t v = pb[i]; if (v < 0) v = -v; if (v > mb) mb = v; }
+    int64_t bound = (int64_t)n * ma * mb;
+    if ((bound >> sh) + (int64_t)n > INT16_MAX) {
+        sc_matmul_s16(a, b, o, m, n, k, sh);
+        return;
+    }
+    /* esp-dsp's effective right shift is (15 - shift); it rounds up */
     dspm_mult_s16(a, b, o, (int)m, (int)n, (int)k, 15 - sh);
 }
 static void fast_matmul_f32(const void *a, const void *b, void *o, size_t m, size_t n, size_t k, int sh) {
@@ -550,9 +558,9 @@ static MP_DEFINE_CONST_FUN_OBJ_KW(vector_sum_obj, 1, vector_sum);
 
 static mp_obj_t vector_info(void) {
     #if VECTOR_HAVE_DSP && VECTOR_HAVE_DSPM
-    const char *m = "esp-dsp (PIE: add s16/f32, mul f32, dot f32, matmul s16/f32); scalar: others";
+    const char *m = "esp-dsp (PIE: add f32, mul f32, dot f32, matmul s16/f32); scalar: others";
     #elif VECTOR_HAVE_DSP
-    const char *m = "esp-dsp (PIE: add s16/f32, mul f32, dot f32); matmul scalar (dspm not found); scalar: others";
+    const char *m = "esp-dsp (PIE: add f32, mul f32, dot f32); matmul scalar (dspm not found); scalar: others";
     #else
     const char *m = "scalar C fallback (esp-dsp not found at build time)";
     #endif
