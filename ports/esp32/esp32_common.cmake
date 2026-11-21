@@ -147,7 +147,7 @@ list(APPEND MICROPY_SOURCE_PORT
     zfs_lfs.c
     modespnow.c
 #    car_core.c
-    vector.c
+#    vector.c
 #    modracer.c
 #    modracingcar.c
     modzfs.c
